@@ -42,7 +42,8 @@
 
 ## Markov decision process policy (2026-11-25, branch `fix/round-cap-and-lasting-leech`)
 - `mdp.py`: run MDP (floor x effective HP x decision point), backward induction F4000 -> F1, heal budget
-  priced with a Lagrange multiplier (18 prices solved at once). ~65 s per build, cached in `cache/`.
+  and smoke budget priced with Lagrange multipliers (9 heal x 6 smoke prices solved at once). ~4 min per build
+  (F4000 horizon), cached in `cache/`.
 - `markov_policy.py`: `MarkovPolicy` = BossFarmPolicy + MDP decisions for heal / fight / flee / rush / step,
   live fight simulation against the actual enemy, field buffs / grenades / buff pairs valued in bosses.
 - `field.py` + `data/field_items.json`: server field-item specs; effects the state only exposes as ids.

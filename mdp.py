@@ -144,7 +144,9 @@ class MdpConfig:
     boss_iterations: int = 60      # value-iteration sweeps of the stationary boss window (convergence
                                    # limit only: a boss never retreats, the fight goes on until one side dies)
     heal_iterations: int = 8       # heal chains considered per decision (closure depth)
-    lambdas: tuple = (0.0, 0.01, 0.05, 0.15, 0.5, 10.0)
+    # heal prices in bosses per max-HP unit. Dense between 0.03 and 0.2: with (..., 0.05, 0.15, ...) the F2410 boss
+    # (32 units left) priced a heal at 0.15 and the agent fought a 5.7% window instead of topping up; now 0.08.
+    lambdas: tuple = (0.0, 0.01, 0.03, 0.05, 0.08, 0.12, 0.2, 0.5, 10.0)
     # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left). Dense where the
     # dual bound turns: a smoke saves roughly the heal price of the HP a deep fight costs (0.03-0.1); with
     # (0, 0.1, ...) a stock of 50 still priced at 0.1, and live runs ended with most smokes unused.
