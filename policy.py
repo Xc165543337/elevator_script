@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 
 from combat import Calibration, FightEstimate, chain_risk, estimate, run_build
 from gear import GearModel
-from model import Build
+from model import LIVE_RULES, Build, ServerRules
 
 # Heal amount (fraction of max HP) of shop supplies; field items are parsed from text.
 SUPPLY_HEAL = {
@@ -51,6 +51,10 @@ class PolicyConfig:
     swap_margin: float = 1.2            # swap loot into a full safe box only if worth >= margin x cheapest secured
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
+    rules: ServerRules = LIVE_RULES     # rules of the server being played (offline engine: LEGACY_RULES)
+    relic_loot_value: int = 10_000_000  # loot (舔包) a fallen player's bag worth at least this instead of
+                                        # returning it for the bounty (捞尸); while that loot is still worth this
+                                        # much outside the safe box, the agent extracts to bank it
 
 
 @dataclass
@@ -66,6 +70,15 @@ def _pct(text: str, pattern: str) -> float:
     return float(m.group(1)) / 100 if m else 0.0
 
 
+_RELIC_VALUE = re.compile(r"估值\s*([\d,]+)\s*金")
+
+
+def relic_value(event: dict) -> int:
+    """Gold value of a fallen player's bag, from the event text ("…遗落的物资，估值 1,234 金。")."""
+    m = _RELIC_VALUE.search(f"{event.get('text') or ''} {event.get('description') or ''}")
+    return int(m.group(1).replace(",", "")) if m else 0
+
+
 def _controls(state: dict) -> dict[str, dict]:
     return {c["command"]: c for c in state.get("controls") or []}
 
@@ -77,6 +90,8 @@ class BossFarmPolicy:
         # (floor, command, params) tuples the server rejected; never proposed again on that floor.
         self.banned: set[tuple] = set()
         self.event_atk_capped = False   # server reported the +60% event attack cap this run
+        self.banking = False            # a looted relic bag is still partly outside the safe box
+        self.blocked_until: dict[str, int] = {}  # item id -> last floor it is blocked (e.g. slow heal active)
         self.adrenaline_used = 0
         self.pouch_used = False
         self._base_stats: dict | None = None   # effective stats last seen with no floor-limited buffs
@@ -89,6 +104,8 @@ class BossFarmPolicy:
         self.adrenaline_used = 0
         self.pouch_used = False
         self._base_stats = None
+        self.blocked_until = {}
+        self.banking = False   # a looted relic bag is still partly outside the safe box
 
     def note(self, notices: list[str]) -> None:
         """React to server limit notices."""
@@ -98,8 +115,15 @@ class BossFarmPolicy:
             if "扩容袋" in text:
                 self.pouch_used = True
 
-    def ban(self, floor: int, decision: "Decision") -> None:
+    def ban(self, floor: int, decision: "Decision", item_id: str | None = None, message: str = "") -> None:
         self.banned.add((floor, decision.command, repr(sorted(decision.params.items()))))
+        if item_id and "还在生效" in message:  # e.g. 缓释再生液 still healing: every copy is refused
+            self.blocked_until[item_id] = floor + 3
+        if item_id == "adrenaline":   # the +50% attack cap is reached (e.g. a resumed run): no more shots
+            self.adrenaline_used = self.cfg.start_adrenaline
+
+    def _item_blocked(self, run: dict, item_id: str) -> bool:
+        return run["floor"] <= self.blocked_until.get(item_id, -1)
 
     def _allowed(self, floor: int, command: str, params: dict) -> bool:
         return (floor, command, repr(sorted(params.items()))) not in self.banned
@@ -115,19 +139,27 @@ class BossFarmPolicy:
 
     def lasting_build(self, state: dict) -> Build:
         """Build without floor-limited buffs (they can expire during a multi-floor rush).
-        Uses the effective stats last observed while no such buff was active."""
+        Uses the effective stats and damage reduction last observed while no such buff was active: as they
+        are while the worn field gear is unchanged (buffs can also lower a stat, e.g. 清仓红牌 defence -20%),
+        otherwise as a cap. Leech / follow-up / boss bonus come from the permanent gear only (buffs such as
+        虹吸滴管 +22% leech expire)."""
         run = state["run"]
-        if not (run.get("field_buffs") or []):
-            self._base_stats = dict(run["effective_stats"])
         build = self.current_build(state)
+        worn = tuple((slot or {}).get("id") for slot in run.get("field_slots") or [])
+        if not (run.get("field_buffs") or []):
+            self._base_stats = {**run["effective_stats"], "reduction": build.reduction, "worn": worn}
         base = self._base_stats
-        if base:
+        if base and base.get("worn") == worn:
+            build = replace(build, atk=base["atk"], defense=base["def"], agi=base["agi"], reduction=base["reduction"])
+        elif base:   # worn gear changed under a buff: the old values only bound the lasting ones
             build = replace(build, atk=min(build.atk, base["atk"]), defense=min(build.defense, base["def"]),
-                            agi=min(build.agi, base["agi"]))
-        return build
+                            agi=min(build.agi, base["agi"]), reduction=min(build.reduction, base["reduction"]))
+        perm = self._affix_build
+        return replace(build, leech=min(build.leech, perm.leech), combo=min(build.combo, perm.combo),
+                       boss_bonus=min(build.boss_bonus, perm.boss_bonus))
 
     def estimate(self, state: dict) -> FightEstimate:
-        return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples)
+        return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples, rules=self.cfg.rules)
 
     @staticmethod
     def _field_heals(run: dict) -> list[tuple[float, dict]]:
@@ -169,7 +201,7 @@ class BossFarmPolicy:
             heal, item = max(fitting, key=lambda x: x[0]) if fitting else min(field_heals, key=lambda x: x[0])
             return Decision("field_use", {"id": item["id"]}, f"field heal {item['name']} (+{heal:.0%}, deficit {deficit:.0%})")
         bag = [(h, it) for h, it in self._bag_heals(run, in_combat)
-               if self._allowed(floor, "use", {"index": it["index"]})]
+               if self._allowed(floor, "use", {"index": it["index"]}) and not self._item_blocked(run, it["id"])]
         if not bag:
             return None
         fitting = [(h, it) for h, it in bag if h <= deficit + 0.10]
@@ -242,8 +274,11 @@ class BossFarmPolicy:
             return self._fight(state, ctr)
         if event.get("kind") == "choice" and any(c["command"] == "event" for c in state.get("controls") or []):
             return self._choice(state)
-        if "rescue" in ctr:
-            return Decision("rescue", ctr["rescue"].get("params", {}), "return fallen player's relic")
+        if event.get("kind") == "relic" and ("rob" in ctr or "rescue" in ctr):
+            return self._relic(event, ctr)
+        bank = self._bank_loot(run, ctr)
+        if bank:
+            return bank
         if "down" in ctr or "rush" in ctr:
             return self._advance(state, ctr)
         if "leave" in ctr:
@@ -288,6 +323,34 @@ class BossFarmPolicy:
         if "extract" in ctr and not (run.get("event") or {}).get("enemy"):
             return Decision("extract", {}, f"safe box full; extract to bank {item['name']}")
         return None
+
+    def _relic(self, event: dict, ctr: dict) -> Decision:
+        """A fallen player's bag: loot it when it is worth relic_loot_value, otherwise return it for the
+        bounty (paid at once, nothing to carry out)."""
+        value = relic_value(event)
+        if value >= self.cfg.relic_loot_value and "rob" in ctr:
+            self.banking = True
+            return Decision("rob", ctr["rob"].get("params", {}),
+                            f"loot fallen player's bag worth {value:,} (>= {self.cfg.relic_loot_value:,})")
+        if "rescue" in ctr:
+            return Decision("rescue", ctr["rescue"].get("params", {}),
+                            f"return fallen player's bag ({value:,}) for the bounty")
+        return Decision("leave", {}, "fallen player's bag: nothing to do")
+
+    def _bank_loot(self, run: dict, ctr: dict) -> Decision | None:
+        """After looting a relic bag: extract while loot worth relic_loot_value is still in the bag, outside
+        the safe box (lost on death). Runs after _secure_loot, so only what the safe box cannot hold counts;
+        once it fits, the run goes on. Ordinary loot alone never triggers an extraction."""
+        if not self.banking:
+            return None
+        exposed = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in run.get("bag") or []
+                      if it.get("can_protect") and it.get("id") not in KEEP_IN_BAG)
+        if exposed < self.cfg.relic_loot_value:
+            self.banking = False
+            return None
+        if (run.get("event") or {}).get("enemy") or "extract" not in ctr:
+            return None
+        return Decision("extract", {}, f"bank {exposed:,.0f} of looted relic the safe box cannot hold")
 
     def _secure_loot(self, state: dict) -> Decision | None:
         """Keep the most valuable loot in the safe box (kept even if the run fails)."""

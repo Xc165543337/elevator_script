@@ -6,7 +6,7 @@
 // 双向伤害倍率（策划的平衡性调整）再与公式比较。
 // ============================================================================
 
-import { BOSS_WINDOW, effAtk, effDef, enemy, fight } from './model.ts'
+import { BOSS_WINDOW, effAtk, effDef, enemy, fight, fightSegment } from './model.ts'
 import type { Build, Foe } from './model.ts'
 import { defaultRng } from './rng.ts'
 import type { Rng } from './rng.ts'
@@ -121,7 +121,8 @@ export interface FightEstimate {
     hpAfter: number
 }
 
-/** 当前时刻的战斗 Build：局内实时属性 + 永久词条 */
+/** 当前时刻的战斗 Build：局内实时属性 + 永久词条。二级属性为服务器汇总值（装备、祝福、局内道具）；
+ * 打击减伤 mitigation 自 2026-11-25 起提供 */
 export function runBuild(state: Json, affixBuild: Build): Build {
     const run = state.run
     const sec = state.player?.secondary || {}
@@ -139,6 +140,8 @@ export function runBuild(state: Json, affixBuild: Build): Build {
         combo: sec.combo || affixBuild.combo,
         bossBonus: sec.boss_bonus || affixBuild.bossBonus,
         critMult: sec.crit_multiplier || affixBuild.critMult,
+        reduction:
+            sec.mitigation === undefined || sec.mitigation === null ? affixBuild.reduction : Number(sec.mitigation),
         dealtMult: mult,
         takenMult: mult,
         atkPct: 0,
@@ -163,8 +166,7 @@ export function estimate(
     const run = state.run
     const foe = run.event.enemy as Foe
     const boss = Boolean(foe.boss)
-    const start = Number(foe.rounds_fought || 0) + 1
-    const rounds = boss ? BOSS_WINDOW - ((start - 1) % BOSS_WINDOW) : 80
+    const [start, rounds] = fightSegment(foe)
     const n = samples
     const res = fight(
         tuned(build, cal),

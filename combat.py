@@ -14,7 +14,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from model import BOSS_WINDOW, Build, enemy, fight
+import heirlooms
+from model import BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, fight, fight_segment, foe_at
 
 BERSERK_CAP = 0.75
 
@@ -81,7 +82,7 @@ class Calibration:
         """Update factors from one battle log, given the Build that was used to predict it."""
         hits = parse_battle_log(log)
         boss_mult = 1 + min(1.2, build.boss_bonus) if enemy.get("boss") else 1.0
-        p_pred = raw_hit(build.eff_atk, enemy["def"] * (1 - min(0.75, build.pierce))) * build.dealt_mult * boss_mult
+        p_pred = raw_hit(build.eff_atk, enemy["def"] * (1 - min(build.pierce_cap, build.pierce))) * build.dealt_mult * boss_mult
         e_pred = raw_hit(enemy["atk"], build.eff_def) * build.taken_mult * (1 - build.reduction)
         for rnd, dmg in hits["player"]:
             if rnd > 1 and p_pred > 0:  # round 1 carries one-off bonuses
@@ -89,6 +90,8 @@ class Calibration:
                 self._update("k_player", "n_player", dmg / (p_pred * berserk))
         for rnd, dmg in hits["enemy"]:
             heavy = 1.26 if enemy.get("boss") and rnd % BOSS_WINDOW == 0 else 1.0
+            if build.beat and rnd % BEAT_EVERY == 0:
+                heavy *= BEAT_TAKEN
             if e_pred > 0:
                 self._update("k_enemy", "n_enemy", dmg / (e_pred * heavy))
 
@@ -100,12 +103,28 @@ class FightEstimate:
     hp_after: float  # mean player HP+shield at the end, over surviving samples
 
 
+RAINBOW_FLEE = {"prism_wind": 0.20}   # 风隙羽标: flee +20 pp after the usual cap; its other bonuses are in the stats
+
+
+def rainbow_flee_bonus(state: dict) -> float:
+    """Flee bonus of the unlocked rainbow items (their permanent skills apply from the first drop)."""
+    return sum(RAINBOW_FLEE.get(r.get("id"), 0.0) for r in (state.get("atlas") or {}).get("rainbow") or []
+               if r.get("unlocked"))
+
+
 def run_build(state: dict, affix_build: Build) -> Build:
-    """Combat Build for the current moment of a run: live stats + permanent affixes."""
+    """Combat Build for the current moment of a run: live stats + permanent affixes.
+    The server's secondary stats are totals (gear, blessings, active field items); `mitigation`
+    (打击减伤) only exists on servers since 2026-11-25."""
     run, sec = state["run"], state["player"].get("secondary") or {}
     es = run["effective_stats"]
     mult = float(run.get("damage_multiplier") or 1)
+    reduction = float(sec["mitigation"]) if sec.get("mitigation") is not None else affix_build.reduction
+    affix_build = replace(affix_build, **heirlooms.build_effects(state.get("heirlooms")),
+                          depth_shred_cap=float((sec.get("condition") or {}).get("depth_cap") or 0.0),
+                          flee_bonus=rainbow_flee_bonus(state))
     return replace(affix_build, hp=run["max_hp"], atk=es["atk"], defense=es["def"], agi=es["agi"], luk=es["luk"],
+                   reduction=reduction,
                    pierce=sec.get("pierce") or affix_build.pierce, leech=sec.get("leech") or affix_build.leech,
                    combo=sec.get("combo") or affix_build.combo, boss_bonus=sec.get("boss_bonus") or affix_build.boss_bonus,
                    crit_mult=sec.get("crit_multiplier") or affix_build.crit_mult,
@@ -113,13 +132,22 @@ def run_build(state: dict, affix_build: Build) -> Build:
                    last_stand=False)  # once per run and its state is not exposed: assume spent
 
 
+def battle_enemy(state: dict, enemy: dict) -> dict:
+    """The enemy as the damage formula sees it: defence after the blessings' deep-floor armour shred of
+    the current floor (`player.secondary.condition.depth_shred`, servers since 2026-11-25)."""
+    condition = (state["player"].get("secondary") or {}).get("condition") or {}
+    shred = float(condition.get("depth_shred") or 0.0)
+    return {**enemy, "def": enemy["def"] * (1 - shred)} if shred > 0 else enemy
+
+
 def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
-             rng: np.random.Generator | None = None) -> FightEstimate:
+             rng: np.random.Generator | None = None, rules: ServerRules = LIVE_RULES) -> FightEstimate:
+    """Outcome of the fight segment that starts now: up to the next pause (boss window, elite pause)
+    or the round cap. `win` is P(the enemy dies within it)."""
     run = state["run"]
-    enemy = run["event"]["enemy"]
+    enemy = battle_enemy(state, run["event"]["enemy"])
     boss = bool(enemy.get("boss"))
-    start = (enemy.get("rounds_fought") or 0) + 1
-    rounds = BOSS_WINDOW - ((start - 1) % BOSS_WINDOW) if boss else 80
+    start, rounds = fight_segment(enemy, rules)
     kp, ke = cal.conservative()
     tuned = replace(build, dealt_mult=build.dealt_mult * kp, taken_mult=build.taken_mult * ke)
     n = samples
@@ -143,6 +171,6 @@ def chain_risk(build: Build, state: dict, cal: Calibration, fights: int = 4, sam
     hp = np.full(samples, float(run["hp"]))
     shield = np.full(samples, float(run.get("shield") or 0))
     for k in range(1, fights + 1):
-        hp, shield, *_ = fight(tuned, hp, shield, enemy("normal", run["floor"] + k, map_id), boss=False, rng=rng)
+        hp, shield, *_ = fight(tuned, hp, shield, foe_at("normal", run["floor"] + k, map_id, tuned), boss=False, rng=rng)
         hp = np.where(hp <= 0, -1.0, hp)  # dead samples stay dead
     return float((hp <= 0).mean())

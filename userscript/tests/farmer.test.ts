@@ -52,8 +52,13 @@ describe('设置', () => {
     })
 
     it('旧版默认携带物资升级为新默认值，用户改过的保持不变', () => {
-        const old = 'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'
-        expect(normalizeSettings({ loadout: old }).loadout).toBe(DEFAULT_SETTINGS.loadout)
+        for (const old of [
+            'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2',
+            'adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,critical_serum=50,field_surgery=50'
+        ])
+            expect(normalizeSettings({ loadout: old }).loadout).toBe(DEFAULT_SETTINGS.loadout)
+        expect(DEFAULT_SETTINGS.loadout).toMatch(/field_surgery=50/)
+        expect(DEFAULT_SETTINGS.loadout).toMatch(/smoke=50/)
         expect(DEFAULT_SETTINGS.loadout).not.toMatch(/pouch|doll/)
         expect(normalizeSettings({ loadout: 'coffee=5' }).loadout).toBe('coffee=5')
     })
@@ -87,6 +92,7 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         controls: []
     }
     const sold: Json[] = []
+    const starts: Json[] = []
     const runControls = (floor: number) =>
         (floor >= 21 ? ['extract'] : ['rush', 'down', 'extract']).map(c => ({ command: c, params: {}, label: c }))
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
@@ -100,14 +106,15 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         }
         commands.push(command)
         let result: Json = { outcome: 'ongoing', summary: '' }
-        if (command === 'simulate') {
+        if (command === 'simulate' || command === 'start') {
+            if (command === 'start') starts.push(params)
             state.run = {
                 map: 'mall',
                 floor: 1,
                 hp: 666,
                 max_hp: 666,
                 shield: 0,
-                simulation: true,
+                simulation: command === 'simulate',
                 effective_stats: { hp: 666, atk: 150, def: 70, agi: 77, luk: 21 },
                 event: { kind: 'ready' },
                 bag: [{ id: 'coffee', index: 1, name: '冰美式' }], // 还有回复：不会因「回复用完」提前撤离
@@ -139,7 +146,7 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         state.controls = state.run ? runControls(state.run.floor) : []
         return json({ result, state, sync_token: `t${rev}` })
     }
-    return { fetch, commands, state, sold }
+    return { fetch, commands, state, sold, starts }
 }
 
 function makeFarmer(server: ReturnType<typeof fakeServer>, settings: Partial<Settings> = {}) {
@@ -197,6 +204,26 @@ describe('完整流程（假服务器）', () => {
         expect(server.state.run).not.toBeNull()
         expect(logs.some(([m]) => m.includes('已暂停'))).toBe(true)
         expect(load<Json[]>('history', [])).toHaveLength(0)
+    })
+
+    it('正式下潜带上开局页选定的两套追寻祝福', async () => {
+        const server = fakeServer()
+        server.state.player.tickets = 1
+        server.state.heirlooms = { focus: ['B06', 'B08'], needs_focus: false, owned: {}, pieces: {}, sets: {} }
+        const { farmer } = makeFarmer(server, { mode: 'real', runs: 1, restock: false })
+        await farmer.run()
+        expect(server.commands[0]).toBe('start')
+        expect(server.starts[0]).toMatchObject({ map_id: 'mall', focus: ['B06', 'B08'] })
+    })
+
+    it('尚未选择追寻祝福时不开正式局', async () => {
+        const server = fakeServer()
+        server.state.player.tickets = 1
+        server.state.heirlooms = { focus: [], needs_focus: false, owned: {}, pieces: {}, sets: {} }
+        const { farmer, logs } = makeFarmer(server, { mode: 'real', runs: 1, restock: false })
+        await farmer.run()
+        expect(server.commands).toEqual([])
+        expect(logs.some(([m, l]) => l === 'warn' && m.includes('追寻祝福'))).toBe(true)
     })
 
     it('练习模式不会动进行中的正式局', async () => {

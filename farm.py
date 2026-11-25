@@ -2,6 +2,7 @@
 
 Examples:
     python farm.py --mode sim --runs 3                     # free practice runs (no rewards)
+    python farm.py --mode sim --runs 3 --policy markov     # decisions from the solved MDP (mdp.py)
     python farm.py --mode real --runs 5 --i-understand-real # spends tickets/gold
     python farm.py --status                                 # show collection progress
 
@@ -21,14 +22,26 @@ from datetime import datetime
 import requests
 
 from client import ElevatorClient, GameError
-from combat import Calibration
-from policy import BossFarmPolicy, PolicyConfig
+import heirlooms
+from combat import Calibration, battle_enemy
+from markov_policy import MarkovConfig, MarkovPolicy
+from model import LEGACY_RULES, LIVE_RULES, floor_mix, parse_floor_odds
+from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
-DEFAULT_LOADOUT = ("adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,"
-                   "critical_serum=50,field_surgery=50")  # healing + adrenaline only; doll/pouch are kept at home
+MAX_CARRY = 50   # live server limit per supply in one start request
+# Every shop heal and smokes at the carry limit, plus the two adrenaline shots the policy uses on F1.
+# Craft-only supplies (grenade, shield) would spend materials, and doll / pouch are kept at home.
+DEFAULT_LOADOUT = ",".join(["adrenaline=2", *(f"{item}={MAX_CARRY}" for item in (*SUPPLY_HEAL, "smoke"))])
 TICKET_PRICE = 350
+# rush_settings parameter -> (state field, wanted value, set even if the server does not report it)
+RUSH_SETTINGS = {
+    "floors": ("rush_floors", 10, True),
+    "skip_valuable": ("rush_skip_valuable", True, True),
+    "event_mode": ("rush_event_mode", "pause", False),
+    "auto_elite": ("rush_auto_elite", False, False),
+}
 
 
 def parse_loadout(text: str) -> dict[str, int]:
@@ -37,6 +50,10 @@ def parse_loadout(text: str) -> dict[str, int]:
         key, _, qty = part.partition("=")
         out[key.strip()] = int(qty or 1)
     return out
+
+
+def format_mix(mix: dict[str, float]) -> str:
+    return " ".join(f"{kind} {p:.0%}" for kind, p in mix.items())
 
 
 SELL_KINDS = ("collection", "material")   # supplies (potions, in-game items), crates and gear are never sold
@@ -68,15 +85,24 @@ def select_loot_to_sell(stock: list[dict], baseline: set[int], dedupe_rarities: 
 
 
 class Farmer:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, client=None):
+        """`client` defaults to the live server; offline.py passes an in-process game engine."""
         self.args = args
-        self.client = ElevatorClient()
+        self.client = client or ElevatorClient()
         self.cal = Calibration.load(os.path.join(HERE, "calibration.json"))
-        self.policy = BossFarmPolicy(self.cal, PolicyConfig(max_floor=args.max_floor,
-                                                             balance_gear_score=args.balance_gear_score))
-        os.makedirs(LOG_DIR, exist_ok=True)
+        config = PolicyConfig(max_floor=args.max_floor, balance_gear_score=args.balance_gear_score,
+                              relic_loot_value=args.relic_loot_value,
+                              rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
+        if args.policy == "markov":
+            self.policy = MarkovPolicy(self.cal, config, MarkovConfig(cache_dir=os.path.join(HERE, "cache")),
+                                       log=self.log)
+        else:
+            self.policy = BossFarmPolicy(self.cal, config)
+        self.focus: list[str] | None = None   # blessing sets pursued by the current real run
+        self.log_dir = args.log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.trace = open(os.path.join(LOG_DIR, f"trace_{stamp}_{args.mode}.jsonl"), "a", encoding="utf-8")
+        self.trace = open(os.path.join(self.log_dir, f"trace_{stamp}_{args.mode}.jsonl"), "a", encoding="utf-8")
 
     # ------------------------------------------------------------- utilities
     def log(self, msg: str) -> None:
@@ -118,6 +144,20 @@ class Farmer:
             self.log(f"refresh failed ({err})")
             return False
 
+    def connect(self, attempts: int = 30, wait: float = 60.0) -> None:
+        """Log in and load the state, waiting out a server that is restarting (HTTP 502 and the like).
+        Game errors such as wrong credentials are raised at once."""
+        for attempt in range(1, attempts + 1):
+            try:
+                self.client.login()
+                self.client.refresh()
+                return
+            except (requests.RequestException, ValueError) as err:
+                if attempt == attempts:
+                    raise
+                self.log(f"server unavailable ({err}); retrying in {wait:.0f}s")
+                time.sleep(wait)
+
     def play_run_supervised(self, retries: int = 10) -> dict:
         """play_run, resuming the same run after transient server/network failures."""
         for attempt in range(retries + 1):
@@ -145,6 +185,8 @@ class Farmer:
         missing = [i["name"] for i in atlas["items"] if not i["unlocked"] and i.get("rarity") != "rainbow"]
         if missing:
             self.log(f"  other missing: {', '.join(missing)}")
+        for line in heirlooms.collection_lines(st.get("heirlooms")):
+            self.log(f"  blessing set {line}")
 
     # ------------------------------------------------------------- preparation
     def owned_supplies(self) -> Counter:
@@ -210,6 +252,7 @@ class Farmer:
     def sell_run_loot(self, baseline: set[int]) -> None:
         """Apply the selling rule (see select_loot_to_sell) after a finished run."""
         self.safe_refresh()
+        self.log("selling loot (one call per item; this can take several minutes)")
         earned = sold = 0
         stock = self.client.state.get("warehouse") or []
         for it, qty in select_loot_to_sell(stock, baseline, set(self.args.dedupe_rarities.split(",")),
@@ -224,44 +267,88 @@ class Farmer:
         self.log(f"sold {sold} run items (~{earned:,} gold)")
 
     def ensure_rush_settings(self) -> None:
+        """Rush the way the models assume: 10 floors, no pause for gold / red loot, and a stop at events
+        and before elites, so each of those is decided individually. Settings a server does not report
+        (older versions) are left alone."""
         player = self.client.state["player"]
-        if player.get("rush_floors") != 10 or not player.get("rush_skip_valuable"):
-            self.call("rush_settings", {"floors": 10, "skip_valuable": True})
+        change = {key: want for key, (field, want, required) in RUSH_SETTINGS.items()
+                  if (required or field in player) and player.get(field) != want}
+        if not change:
+            return
+        try:
+            self.call("rush_settings", change)
+            self.log(f"rush settings changed: {change}")
+        except GameError as err:   # e.g. a server that refuses changes during a run
+            self.log(f"could not change rush settings {change}: {err}")
 
     # ------------------------------------------------------------- run loop
+    def pursuit(self) -> list[str] | None:
+        """Blessing sets to pursue on a real run (None: the server has no blessings). Raises FocusError."""
+        return heirlooms.resolve_focus(self.client.state.get("heirlooms"), self.args.focus)
+
     def start_run(self, loadout: dict[str, int]) -> None:
         if self.args.mode == "sim":
             self.call("simulate", {"map_id": self.args.map})
             return
+        base = {"map_id": self.args.map, **({"focus": self.focus} if self.focus else {})}
         owned = self.owned_supplies()
         supplies = [{"id": i, "quantity": min(q, owned[i])} for i, q in loadout.items() if owned[i] > 0]
         try:
-            self.call("start", {"map_id": self.args.map, "supplies": supplies})
+            self.call("start", {**base, "supplies": supplies})
         except GameError as err:
             # Carry limits are undocumented: fall back to halving quantities until accepted.
             self.log(f"start rejected with supplies ({err}); retrying with smaller loadout")
             while supplies:
                 supplies = [{"id": s["id"], "quantity": s["quantity"] // 2} for s in supplies if s["quantity"] > 1]
                 try:
-                    self.call("start", {"map_id": self.args.map, "supplies": supplies})
+                    self.call("start", {**base, "supplies": supplies})
                     return
                 except GameError:
                     continue
-            self.call("start", {"map_id": self.args.map})
+            self.call("start", base)
+
+    def ensure_pursuit(self) -> None:
+        """A running real run that still lacks its blessing choice (本局补选追寻) gets it now."""
+        if (self.client.state.get("heirlooms") or {}).get("needs_focus") and self.focus:
+            self.call("pursue", {"focus": self.focus})
+            self.log(f"pursuing blessing sets {', '.join(self.focus)}")
 
     def reset_tally(self) -> None:
         self.tally = {"t0": time.time(), "steps": 0, "bosses": 0, "rainbows": [], "floor": 0,
-                      "outcome": "", "summary": ""}
+                      "outcome": "", "summary": "", "heirlooms": heirlooms.owned(self.client.state.get("heirlooms")),
+                      "odds_checked": False}
+
+    def check_floor_odds(self, run: dict) -> None:
+        """Once per run, compare the encounter odds the client shows for the next floor with the model's
+        (they changed with the server update of 2026-11-25) and warn on a mismatch."""
+        floor = run["floor"] + 1
+        odds = parse_floor_odds(run.get("next_floor"))
+        if self.tally["odds_checked"] or odds is None or floor < 60:   # the blend from F1 has settled by F60
+            return
+        self.tally["odds_checked"] = True
+        expected = floor_mix(floor, self.policy.cfg.rules)
+        if max(abs(odds[k] - expected[k]) for k in odds) > 0.015:
+            self.log(f"WARNING: encounter odds at F{floor} are {format_mix(odds)} on the server but "
+                     f"{format_mix(expected)} in the model; update model.ServerRules.deep_mix")
+        else:
+            self.log(f"encounter odds at F{floor} match the model ({format_mix(odds)})")
 
     def play_run(self) -> dict:
         """Play until the run ends. Counters live in self.tally so they survive resumes."""
         t = self.tally
+        preview = None   # a wish preview comes back in the command result, not in the state
         while self.client.state.get("run"):
+            self.ensure_pursuit()
             state = self.client.state
+            if preview:
+                state = {**state, "wish_preview": preview}
             run = state["run"]
+            self.check_floor_odds(run)
             floor = t["floor"] = run["floor"]
             decision = self.policy.decide(state)
-            enemy = (run.get("event") or {}).get("enemy") if decision.command == "fight" else None
+            killing = decision.command in ("fight", "wish_confirm")   # a confirmed wish kills the enemy outright
+            enemy = (run.get("event") or {}).get("enemy") if killing else None
+            enemy = battle_enemy(state, enemy) if enemy else None
             fighter = self.policy.current_build(state) if enemy else None
             try:
                 data = self.call(decision.command, decision.params)
@@ -269,11 +356,14 @@ class Farmer:
                 if err.code != "invalid":
                     raise
                 self.log(f"F{floor} rejected {decision.command} {decision.params}: {err}; choosing again")
-                self.policy.ban(floor, decision)
+                used = next((it.get("id") for it in run.get("bag") or []
+                             if decision.command == "use" and it.get("index") == decision.params.get("index")), None)
+                self.policy.ban(floor, decision, item_id=used, message=str(err))
                 self.client.refresh()
                 continue
             t["steps"] += 1
             result = data.get("result") or {}
+            preview = result.get("wish_preview")
             self.policy.note(result.get("limit_notices") or [])
             battle = result.get("battle")
             if enemy and battle and battle.get("log"):
@@ -288,6 +378,7 @@ class Farmer:
             self.trace.write(json.dumps({"t": time.time(), "floor": floor, "hp": run["hp"],
                                          "stats": run.get("effective_stats"), "dmg_mult": run.get("damage_multiplier"),
                                          "slots": run.get("field_slots"), "enemy": (run.get("event") or {}).get("enemy"),
+                                         "condition": (state["player"].get("secondary") or {}).get("condition"),
                                          "decision": decision.command, "params": decision.params,
                                          "reason": decision.reason, "result": result}, ensure_ascii=False) + "\n")
             if self.args.verbose or decision.command not in ("rush", "fight", "field_pick") or (enemy and enemy.get("boss")):
@@ -296,8 +387,13 @@ class Farmer:
             t["summary"], t["outcome"] = result.get("summary", t["summary"]), result.get("outcome", t["outcome"])
         self.cal.save()
         self.trace.flush()
-        return {"floor": t["floor"], "bosses": t["bosses"], "rainbows": list(t["rainbows"]), "steps": t["steps"],
-                "seconds": round(time.time() - t["t0"]), "outcome": t["outcome"], "summary": t["summary"]}
+        found = self.client.state.get("heirlooms")
+        shining = heirlooms.new_pieces(t["heirlooms"], heirlooms.owned(found), found)
+        for name in shining:
+            self.log(f"*** SHINING DROP: {name} ***")
+        return {"floor": t["floor"], "bosses": t["bosses"], "rainbows": list(t["rainbows"]), "shining": shining,
+                "steps": t["steps"], "seconds": round(time.time() - t["t0"]), "outcome": t["outcome"],
+                "summary": t["summary"]}
 
     @staticmethod
     def _loot(result: dict) -> list[dict]:
@@ -308,20 +404,25 @@ class Farmer:
         return items
 
     def record(self, summary: dict) -> None:
-        path = os.path.join(LOG_DIR, "runs.csv")
-        new = not os.path.exists(path)
+        path = os.path.join(self.log_dir, "runs.csv")
+        row = {"time": datetime.now().isoformat(timespec="seconds"), "mode": self.args.mode,
+               "policy": self.args.policy, "map": self.args.map, "floor": summary["floor"],
+               "bosses": summary["bosses"], "rainbows": "|".join(summary["rainbows"]),
+               "shining": "|".join(summary.get("shining") or []), "steps": summary["steps"],
+               "seconds": summary["seconds"], "outcome": summary["outcome"], "summary": summary["summary"]}
+        header = list(row)
+        if os.path.exists(path):  # keep an existing file's columns (older files lack "policy" and "shining")
+            with open(path, newline="", encoding="utf-8") as fh:
+                header = next(csv.reader(fh), header)
         with open(path, "a", newline="", encoding="utf-8") as fh:
-            writer = csv.writer(fh)
-            if new:
-                writer.writerow(["time", "mode", "map", "floor", "bosses", "rainbows", "steps", "seconds", "outcome", "summary"])
-            writer.writerow([datetime.now().isoformat(timespec="seconds"), self.args.mode, self.args.map,
-                             summary["floor"], summary["bosses"], "|".join(summary["rainbows"]),
-                             summary["steps"], summary["seconds"], summary["outcome"], summary["summary"]])
+            writer = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore")
+            if fh.tell() == 0:
+                writer.writeheader()
+            writer.writerow(row)
 
     # ------------------------------------------------------------- main
     def run(self) -> None:
-        self.client.login()
-        self.client.refresh()
+        self.connect()
         self.print_status()
         if self.args.status:
             return
@@ -331,9 +432,10 @@ class Farmer:
             return
         loadout = parse_loadout(self.args.loadout)
         total_bosses = 0
-        baseline = self.warehouse_ids()
+        session_baseline = baseline = self.warehouse_ids()  # loot already at home is never bulk-sold
         for n in range(1, self.args.runs + 1):
-            self.client.refresh()
+            while not self.safe_refresh():   # between runs too, a restarting server is waited out
+                time.sleep(30)
             if not self.client.state.get("run"):
                 if self.args.mode == "real":
                     if all(self.rainbow_status().values()):
@@ -341,6 +443,11 @@ class Farmer:
                         break
                     if not self.ensure_ticket():
                         self.log("no tickets available - stopping")
+                        break
+                    try:
+                        self.focus = self.pursuit()
+                    except heirlooms.FocusError as err:
+                        self.log(f"cannot start a real run: {err}")
                         break
                     if self.args.restock:
                         self.restock(loadout)
@@ -357,25 +464,49 @@ class Farmer:
                     self.log(f"an active {'practice' if is_sim else 'REAL'} run exists; refusing to touch it in "
                              f"{self.args.mode} mode. Finish it with the matching --mode.")
                     break
+                if not is_sim:
+                    try:
+                        self.focus = self.pursuit()
+                    except heirlooms.FocusError as err:
+                        self.focus = None   # only needed if the server asks for it (logged when it does)
+                        if (self.client.state.get("heirlooms") or {}).get("needs_focus"):
+                            self.log(f"this run still needs its blessing choice: {err}")
+                            break
+                self.ensure_rush_settings()
                 self.reset_tally()
                 self.log(f"resuming run at F{self.client.state['run']['floor']}")
             summary = self.play_run_supervised()
             total_bosses += summary["bosses"]
-            if self.args.mode == "real" and self.args.sell_loot:
-                self.sell_run_loot(baseline)
             self.record(summary)
             self.log(f"run {n} done: F{summary['floor']} bosses {summary['bosses']} steps {summary['steps']} "
                      f"{summary['seconds']}s | {summary['summary']} | total bosses {total_bosses}")
+            if self.args.mode == "real" and self.args.sell_loot == "each":
+                self.sell_run_loot(baseline)
+        if self.args.mode == "real" and self.args.sell_loot == "end":
+            self.log("selling the loot of this session")
+            self.sell_run_loot(session_baseline)
         self.client.refresh()
         self.print_status()
         self.log(f"calibration: k_player={self.cal.k_player:.3f} k_enemy={self.cal.k_enemy:.3f}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=("sim", "real"), default="sim")
+    ap.add_argument("--policy", choices=("threshold", "markov"), default="threshold",
+                    help="threshold = hand-tuned rules (policy.py); markov = solved MDP (markov_policy.py)")
+    ap.add_argument("--log-dir", default=LOG_DIR, help="where traces and runs.csv are written")
     ap.add_argument("--map", default="mall", help="map id (mall is optimal for boss farming)")
     ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--focus", default=None,
+                    help="real runs: the two blessing sets to pursue (追寻), by number or id, e.g. 1,8; "
+                         "default: the pair chosen last time")
+    ap.add_argument("--relic-loot-value", type=int, default=PolicyConfig.relic_loot_value,
+                    help="loot (舔包) fallen players' bags worth at least this much gold instead of returning them "
+                         "for the bounty; loot that valuable which the safe box cannot hold is banked by extracting")
+    ap.add_argument("--rules", choices=("live", "legacy"), default="live",
+                    help="server rules: live = elites pause after round 8 of 16 and the current encounter odds "
+                         "(server since 2026-11-25); legacy = the older engine of the public bot repository (offline.py)")
     ap.add_argument("--loadout", default=DEFAULT_LOADOUT, help="supplies to carry, e.g. field_surgery=12,coffee=10")
     ap.add_argument("--no-restock", dest="restock", action="store_false", help="do not buy missing supplies")
     ap.add_argument("--buy-tickets", action="store_true", help="buy paid tickets (350 gold) when free ones run out")
@@ -384,8 +515,9 @@ def main() -> None:
     ap.add_argument("--delay", type=float, default=0.05, help="seconds between API calls")
     ap.add_argument("--balance-gear-score", type=float, default=-1.0,
                     help="wear score for the x2/x2 temp gear (negative = never wear it)")
-    ap.add_argument("--sell-loot", action="store_true",
-                    help="after each real run, sell the loot it brought home (see --sell-rarities)")
+    ap.add_argument("--sell-loot", choices=("off", "end", "each"), default="off",
+                    help="loot selling (one server call per item, slow): off = never; end = once after the "
+                         "last run of this session; each = after every run")
     ap.add_argument("--sell-rarities", default="purple,green,white",
                     help="rarities whose new run loot is sold entirely (blue is kept for rerolls)")
     ap.add_argument("--dedupe-rarities", default="red,gold",
@@ -395,7 +527,11 @@ def main() -> None:
     ap.add_argument("--status", action="store_true", help="print collection status and exit")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--i-understand-real", action="store_true", help="required for --mode real")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.sell_now and args.mode != "real":
         sys.exit("--sell-now needs --mode real --i-understand-real")
     if args.mode == "real" and not args.i_understand_real and not args.status:

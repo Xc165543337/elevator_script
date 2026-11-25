@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Calibration, parseBattleLog } from '../src/combat.ts'
-import { enemy, fight, makeBuild, withTempGear } from '../src/model.ts'
+import { enemy, fight, fightSegment, makeBuild, withTempGear } from '../src/model.ts'
 import { BossFarmPolicy } from '../src/policy.ts'
 import type { PolicyConfig } from '../src/policy.ts'
 import { seededRng } from '../src/rng.ts'
@@ -310,5 +310,15 @@ describe('临装选择', () => {
         state.run.field_offer = {}
         state.run.floor = 40
         expect(makePolicy().decide(state).command).toBe('rush')
+    })
+})
+
+describe('回合上限（2026-11-25 起）', () => {
+    it('精英打到第 8 回合整备，之后打满 16 回合；普通怪 15 回合；首领每窗 4 回合', () => {
+        const foe = { hp: 1, atk: 1, def: 0, agi: 0 }
+        expect(fightSegment({ ...foe, elite: true, boss: 0 })).toEqual([1, 8])
+        expect(fightSegment({ ...foe, elite: true, boss: 0, rounds_fought: 8 })).toEqual([9, 8])
+        expect(fightSegment({ ...foe, elite: false, boss: 0 })).toEqual([1, 15])
+        expect(fightSegment({ ...foe, elite: true, boss: 3, rounds_fought: 5 })).toEqual([6, 3])
     })
 })

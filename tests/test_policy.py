@@ -246,3 +246,91 @@ def test_doll_makes_the_agent_greedy():
     assert make_policy().decide(state).command != "extract"          # dry but doll: keep going
     elite = {"name": "elite", "elite": True, "hp": 2700, "atk": 300, "def": 90, "agi": 55}
     assert make_policy().decide(make_state(hp=300, enemy=elite, bag=doll)).command == "fight"
+
+
+def test_regular_fights_are_capped_at_15_rounds():
+    rng = np.random.default_rng(3)
+    tank = {"hp": 10**6, "atk": 1, "def": 0, "agi": 0}
+    hp, _, ehp, _, used = fight(AFFIXES, np.full(50, 600.0), np.zeros(50), tank, boss=False, rng=rng)
+    assert used.max() == 15 and (ehp > 0).all()          # draw: enemy survives
+
+
+def test_rush_check_ignores_temporary_leech():
+    policy = make_policy()
+    state = make_state(hp=582, bag=KIT, controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 1225
+    state["player"]["secondary"]["leech"] = 0.28          # 6% set + 22% 虹吸滴管 buff
+    assert policy.lasting_build(state).leech == AFFIXES.leech
+
+
+def test_active_slow_heal_blocks_every_copy():
+    bag = [{"id": "slow_serum", "index": i, "name": "缓释再生液"} for i in (24, 25, 26)]
+    policy = make_policy()
+    state = make_state(hp=300, bag=bag, controls=("rush", "down", "extract"))
+    first = policy.decide(state)
+    assert first.command == "use" and first.params == {"index": 24}
+    policy.ban(state["run"]["floor"], first, item_id="slow_serum", message="上一次缓释治疗还在生效。")
+    assert policy.decide(state).command != "use"     # no retry with the other copies
+
+
+def test_floor_mix_follows_server_weight_curve():
+    from model import LEGACY_RULES, floor_mix
+
+    first, deep = floor_mix(1, LEGACY_RULES), floor_mix(1000, LEGACY_RULES)
+    assert abs(sum(first.values()) - 1) < 1e-9 and abs(sum(deep.values()) - 1) < 1e-9
+    assert abs(first["elite"] - 0.05) < 1e-9 and abs(deep["elite"] - 0.20) < 1e-6
+    assert abs(floor_mix(13, LEGACY_RULES)["elite"] - 0.125) < 1e-9  # one half-life: halfway between 5% and 20%
+    assert abs(deep["normal"] - 0.33) < 1e-6
+
+
+def test_live_floor_mix_matches_the_odds_the_client_shows():
+    from model import floor_mix, parse_floor_odds
+
+    shown = parse_floor_odds("📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)")
+    assert shown == {"normal": 0.41, "elite": 0.12, "choice": 0.13, "loot": 0.34}
+    assert all(abs(floor_mix(247)[k] - p) < 1e-6 for k, p in shown.items())
+    assert parse_floor_odds("📊 F250 必遇首领。可以先整备局内道具，击败后回满生命。") is None
+    assert parse_floor_odds("📊 F251：📡 100%「普怪」") is None and parse_floor_odds(None) is None
+    with_relics = parse_floor_odds("📊 F300：箱30% 怪33% 精20% 奇13% 遗4%｜金红50.0%(红9.0%)")
+    assert abs(with_relics["loot"] - 0.34) < 1e-9
+
+
+def test_refused_adrenaline_ends_the_shots_for_the_run():
+    from policy import Decision
+    p = BossFarmPolicy(CAL)
+    p.ban(616, Decision("use", {"index": 26}), item_id="adrenaline",
+          message="肾上腺素最多把本局攻击加成叠到 +50%，这针已保留。")
+    assert p.adrenaline_used == p.cfg.start_adrenaline
+
+
+def _relic_state(value, bag=(), safe=(), capacity=4):
+    return {"run": {"floor": 900, "hp": 700, "max_hp": 700, "bag": list(bag), "safe": list(safe), "safe_capacity": capacity,
+                    "event": {"kind": "relic", "name": "遗物盒", "text": f"某人 遗落的物资，估值 {value:,} 金。"},
+                    "effective_stats": {"hp": 700, "atk": 150, "def": 70, "agi": 77, "luk": 21}},
+            "player": {"loadout": {}, "secondary": {}},
+            "controls": [{"command": c, "params": {}, "label": c} for c in ("rob", "rescue", "leave", "extract")],
+            "atlas": {"items": []}}
+
+
+def test_loots_a_bag_worth_the_threshold_and_returns_cheaper_ones():
+    p = BossFarmPolicy(CAL)
+    p.missing_collectibles = lambda _state: set()
+    assert p.decide(_relic_state(15_000_000)).command == "rob"
+    assert p.decide(_relic_state(4_000_000)).command == "rescue"
+
+
+def test_extracts_when_the_safe_box_cannot_hold_valuable_loot():
+    p = BossFarmPolicy(CAL)
+    p.missing_collectibles = lambda _state: set()
+    loot = [{"id": f"g{i}", "index": i + 1, "name": f"g{i}", "value": 3_000_000, "can_protect": True} for i in range(5)]
+    safe = [{"id": "s", "index": k + 1, "name": "s", "value": 6_000_000} for k in range(4)]
+    p.new_run()
+    assert p._bank_loot({"bag": loot, "event": {"kind": "ready"}}, {"extract": {}}) is None   # ordinary loot
+    p.banking = True                                                 # a relic bag was looted
+    s = _relic_state(0, bag=loot, safe=safe)
+    s["run"]["event"] = {"kind": "ready"}
+    s["controls"] = [{"command": c, "params": {}, "label": c} for c in ("down", "rush", "extract")]
+    assert p.decide(s).command == "extract"
+    coffee = {"id": "coffee", "index": 9, "name": "coffee", "quantity": 5, "value": 300, "can_protect": True}
+    s["run"]["bag"] = [*loot[:2], coffee]                            # 6M exposed: keep farming
+    assert p._bank_loot(s["run"], {"extract": {}}) is None

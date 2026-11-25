@@ -7,6 +7,7 @@ verified against live data (e.g. the F1030 Mall boss: 4,067 HP predicted and obs
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from functools import lru_cache
 
@@ -19,8 +20,79 @@ _GROWTH = {  # (a, b, c) per stat: value = a + b*x + c*z
     "boss": {"hp": (198, 2.6, 7.1), "atk": (30.5, 0.21, 0.58), "def": (4.4, 0.095, 0.33), "agi": (9, 0.12, 0.8)},
 }
 BOSS_WINDOW, BOSS_HEAVY = 4, 1.26
-# Approximate floor mix observed in the Mall (per non-boss floor).
-P_MOB, P_ELITE = 0.23, 0.14
+BEAT_EVERY, BEAT_TAKEN = 4, 0.65   # blessing B06 4 pieces (抢拍): every 4th round of a fight against one enemy
+REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rounds (no kill, no kill-heal)
+
+
+@dataclass(frozen=True)
+class ServerRules:
+    """Rules that differ between server versions.
+
+    Since 2026-11-25 the live server gives elites 16 rounds with a pause after round 8: HP and the
+    elite's state are kept, and the player may heal or change gear before resuming. A draw at the cap
+    still makes the elite retreat without loot. The same update moved encounters from elites to normal
+    monsters (the client shows 箱34% 怪41% 精12% 奇13% from F247 on). The public bot repository has the
+    same rules since its update of the same evening (f21568b); LEGACY_RULES model older checkouts."""
+    elite_round_cap: int = 16
+    elite_break: int = 8            # round after which an elite fight pauses (0 = no pause)
+    deep_mix: tuple[int, int, int, int] = (41, 12, 13, 34)   # deep-floor weights: normal, elite, event, loot
+    first_mix: tuple[int, int, int, int] = (36, 3, 12, 49)   # F1 weights, same order (loot includes relics)
+
+
+LIVE_RULES = ServerRules()
+LEGACY_RULES = ServerRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0, deep_mix=(33, 20, 13, 34),
+                           first_mix=(34, 5, 12, 49))
+
+
+def fight_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> tuple[int, int]:
+    """(first round, number of rounds) of the fight segment that starts now: up to the end of the
+    boss window, the elite pause or the round cap, whichever comes first."""
+    fought = int(enemy.get("rounds_fought") or 0)
+    if enemy.get("boss"):
+        return fought + 1, BOSS_WINDOW - fought % BOSS_WINDOW
+    if enemy.get("elite"):
+        end = rules.elite_break if 0 < rules.elite_break and fought < rules.elite_break else rules.elite_round_cap
+    else:
+        end = REGULAR_ROUND_CAP
+    return fought + 1, max(1, end - fought)
+
+
+def pauses_after_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> bool:
+    """Whether the segment starting now ends at the elite pause (the fight then resumes)."""
+    fought = int(enemy.get("rounds_fought") or 0)
+    return bool(enemy.get("elite") and not enemy.get("boss") and 0 < rules.elite_break and fought < rules.elite_break)
+# Encounter weights of a non-boss floor (server `event_weights`, all maps). The server blends the
+# F1 row into the deep row (ServerRules.deep_mix) with a 12-floor half-life; both rows sum to 100.
+# Both rows are the server's `event_weights` (content.json); the legacy ones were also verified on 7.8k
+# real Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%, chest/relic 33.8%).
+MIX_KINDS = ("normal", "elite", "choice", "loot")    # loot includes relics
+_FLOOR_WEIGHTS_HALF_LIFE = 12
+
+
+@lru_cache(maxsize=None)
+def floor_mix(floor: int, rules: ServerRules = LIVE_RULES) -> dict[str, float]:
+    """P(encounter kind) on a non-boss floor, ignoring the 潜行 (sneak) affix, which the build lacks."""
+    u = 1 - 2 ** (-max(0, floor - 1) / _FLOOR_WEIGHTS_HALF_LIFE)
+    weights = [first + (deep - first) * u for first, deep in zip(rules.first_mix, rules.deep_mix)]
+    total = sum(weights)
+    return {k: w / total for k, w in zip(MIX_KINDS, weights)}
+
+
+_ODDS_PART = re.compile(r"(箱|怪|精|奇|遗)(\d+(?:\.\d+)?)%")
+_ODDS_KIND = {"箱": "loot", "遗": "loot", "怪": "normal", "精": "elite", "奇": "choice"}
+
+
+def parse_floor_odds(text: str | None) -> dict[str, float] | None:
+    """Encounter odds from the client's next-floor line (`run.next_floor`, e.g.
+    "📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)"), as fractions keyed like floor_mix (a relic share
+    遗 counts as loot). None when the line shows no odds (boss floor, radar peek, vault)."""
+    parts = _ODDS_PART.findall((text or "").split("｜", 1)[0])
+    if not parts:
+        return None
+    odds = dict.fromkeys(MIX_KINDS, 0.0)
+    for label, value in parts:
+        odds[_ODDS_KIND[label]] += float(value) / 100
+    return odds
 
 
 def boss_floors(limit: int) -> list[int]:
@@ -53,6 +125,24 @@ def enemy(kind: str, floor: int, map_id: str = "mall") -> dict:
     return {k: math.floor(v) for k, v in out.items()}
 
 
+DEPTH_SHRED_FROM, DEPTH_SHRED_HALF = 50, 85
+
+
+def depth_shred(floor: int, cap: float) -> float:
+    """Blessings' deep-floor armour shred (本层祝福深层破甲): cap * d / (d + 85), d = floors below F50.
+    Fitted exactly on the live `secondary.condition.depth_shred` (F51 0.00698, F63 0.0796 at cap 0.6).
+    It multiplies with pierce: effective defence = def * (1 - shred) * (1 - pierce)."""
+    d = max(0, floor - DEPTH_SHRED_FROM)
+    return cap * d / (d + DEPTH_SHRED_HALF)
+
+
+def foe_at(kind: str, floor: int, map_id: str, build: "Build") -> dict:
+    """enemy() as the damage formula sees it for this build: defence after the depth shred."""
+    foe = enemy(kind, floor, map_id)
+    shred = depth_shred(floor, build.depth_shred_cap)
+    return {**foe, "def": foe["def"] * (1 - shred)} if shred else foe
+
+
 @dataclass(frozen=True)
 class Build:
     """Everything that matters in combat. Rates are fractions (0.26 = 26%)."""
@@ -79,6 +169,16 @@ class Build:
     reduction: float = 0.0      # 减伤 (negative = more damage taken)
     def_pct: float = 0.0        # temp-gear defence %
     atk_pct: float = 0.0        # temp-gear / run attack %
+    dodge_bonus: float = 0.0    # field dodge modifier (player dodge is capped at 52%)
+    guard_hits: int = 0         # field guard (防碎封箱带 ...): the next N landed enemy hits are reduced
+    guard_reduction: float = 0.0
+    burst_hits: int = 0         # field burst (热敏收银纸 ...): the next N main attacks are charged
+    burst_mult: float = 1.0
+    burst_sure: bool = False    # charged attacks cannot be dodged
+    pierce_cap: float = 0.75    # B06 缺刻值夜表 2 pieces: +12 pp above the cap (87%)
+    beat: bool = False          # B06 4 pieces (抢拍): rounds 4, 8, ... the player acts first and takes x0.65
+    depth_shred_cap: float = 0.0  # worn blessings: enemy defence shred from F50 on, up to this (see depth_shred)
+    flee_bonus: float = 0.0     # rainbow 风隙羽标: flee chance +20 pp after the usual 90% cap (max 100%)
     label: str = ""
 
     @property
@@ -91,7 +191,7 @@ class Build:
 
     @property
     def dodge(self) -> float:
-        return min(0.52, max(0.0, min(0.45, 0.03 + 0.004 * self.agi)))
+        return min(0.52, max(0.0, min(0.45, 0.03 + 0.004 * self.agi) + self.dodge_bonus))
 
     def crit(self, low_hp: bool = False) -> float:
         base = min(0.60, (0.05 + 0.005 * max(0.0, self.luk)) * (2 if (low_hp and self.desperate) else 1))
@@ -114,12 +214,14 @@ TEMP_GEAR = {
 
 
 def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: bool,
-          ehp: np.ndarray | None = None, start_round: int = 1, rounds: int = 80,
+          ehp: np.ndarray | None = None, start_round: int = 1, rounds: int = REGULAR_ROUND_CAP,
           last_stand: np.ndarray | None = None, rng: np.random.Generator) -> tuple:
     """Vectorised fight over N parallel samples. Returns (hp, shield, ehp, last_stand, rounds_used).
 
     For bosses pass rounds=4-((start_round-1)%4) to stop at the end of a window.
     Samples with hp<=0 are dead; ehp<=0 means the enemy died (kill heal already applied).
+    Follows the server's order: the first-round bonus and charges apply to the main attack only, a
+    follow-up only comes while the enemy still lives, guard charges are spent by landed hits.
     """
     n = hp.shape[0]
     hp, shield = hp.astype(float).copy(), shield.astype(float).copy()
@@ -128,34 +230,40 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
     max_hp = build.hp
     edodge = min(0.45, 0.03 + 0.004 * foe["agi"])
     pdodge = build.dodge
-    p_raw = build.eff_atk * 100 / (100 + 2.5 * foe["def"] * (1 - min(0.75, build.pierce)))
+    p_raw = build.eff_atk * 100 / (100 + 2.5 * foe["def"] * (1 - min(build.pierce_cap, build.pierce)))
     e_raw = foe["atk"] * 100 / (100 + 2.5 * build.eff_def) * (1 - build.reduction) * build.taken_mult
     boss_mult = 1 + min(1.2, build.boss_bonus) if boss else 1.0
     player_first = build.agi >= foe["agi"]
+    guard_left = np.full(n, build.guard_hits)
+    burst_left = np.full(n, build.burst_hits)
     used = np.zeros(n)
     active = (hp > 0) & (ehp > 0)
     for i in range(rounds):
         if not active.any():
             break
-        t = start_round + i
+        t = start_round + i                          # rounds count per enemy, across pauses
+        beat_round = build.beat and t % BEAT_EVERY == 0
         used[active] += 1
+
+        def strike(mult, atk_mult, crit_p, hit):
+            dmg = np.maximum(1.0, np.floor(p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n)))
+            dmg = np.floor(np.where(rng.random(n) < crit_p, dmg * build.crit_mult, dmg))
+            return np.maximum(1.0, np.floor(dmg * build.dealt_mult)) * hit
 
         def player_attack(mask):
             nonlocal hp
             low = hp < 0.3 * max_hp
             mult = (1 + min(0.75, (t - 1) * build.berserk)) * boss_mult
-            if t == 1:
-                mult *= 1 + build.heavy
             atk_mult = np.where(low & build.desperate, 1.75, 1.0)
             crit_p = np.where(low, build.crit(True), build.crit(False))
-            hit = rng.random(n) >= edodge
-            crit = rng.random(n) < crit_p
-            dmg = p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n) * np.where(crit, build.crit_mult, 1.0)
-            dmg = np.floor(dmg * build.dealt_mult) * hit
+            charged = mask & (burst_left > 0)
+            burst_left[charged] -= 1
+            sure = charged & build.burst_sure
+            main = mult * (1 + build.heavy if t == 1 else 1.0) * np.where(charged, build.burst_mult, 1.0)
+            dmg = strike(main, atk_mult, crit_p, ((rng.random(n) >= edodge) | sure) & mask)
             if build.combo > 0:
-                extra = (rng.random(n) < min(0.7, build.combo)) & (rng.random(n) >= edodge)
-                dmg = dmg + np.floor(0.6 * p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n) * build.dealt_mult) * extra
-            dmg = np.maximum(dmg, hit * 1.0) * mask
+                extra = mask & (ehp > dmg) & (rng.random(n) < min(0.7, build.combo)) & (rng.random(n) >= edodge)
+                dmg = dmg + strike(0.6 * mult, atk_mult, crit_p, extra)
             dealt = np.minimum(dmg, np.maximum(ehp, 0))
             np.subtract(ehp, dmg, out=ehp)
             if build.leech > 0:
@@ -168,6 +276,11 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
             dmg = e_raw * rng.uniform(0.9, 1.1, n)
             if boss and t % BOSS_WINDOW == 0:
                 dmg = dmg * BOSS_HEAVY
+            if beat_round:
+                dmg = dmg * BEAT_TAKEN
+            guarded = hit & (guard_left > 0)
+            dmg = np.where(guarded, dmg * (1 - build.guard_reduction), dmg)
+            guard_left[guarded] -= 1
             dmg = np.floor(np.maximum(dmg, 1)) * hit
             absorbed = np.minimum(shield, dmg)
             shield -= absorbed
@@ -178,7 +291,7 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
             hp = np.where(saved, 1.0, hp)
             ls = ls & ~saved
 
-        for who in ((player_attack, enemy_attack) if player_first else (enemy_attack, player_attack)):
+        for who in ((player_attack, enemy_attack) if player_first or beat_round else (enemy_attack, player_attack)):
             who(active & (hp > 0) & (ehp > 0))
         active = (hp > 0) & (ehp > 0)
     killed = (ehp <= 0) & (hp > 0)
@@ -257,7 +370,9 @@ def simulate_runs(build: Build, *, runs: int = 300, heals: int = 30, max_floor: 
             alive &= ~fighting  # boss never died within 60 windows -> treat as stuck
         else:
             roll = rng.random(runs)
-            for kind, mask in (("normal", roll < P_MOB), ("elite", (roll >= P_MOB) & (roll < P_MOB + P_ELITE))):
+            mix = floor_mix(floor)
+            p_normal, p_elite = mix["normal"], mix["elite"]
+            for kind, mask in (("normal", roll < p_normal), ("elite", (roll >= p_normal) & (roll < p_normal + p_elite))):
                 mask &= alive
                 if not mask.any():
                     continue
@@ -288,7 +403,7 @@ def _need_hp(build: Build, kind: str, floor: int, map_id: str, risk: float) -> f
     for frac in np.arange(0.05, 1.0001, 0.05):
         hp = np.full(n, frac * build.hp)
         out, *_ = fight(build, hp, np.zeros(n), foe, boss=(kind == "boss"),
-                        rounds=BOSS_WINDOW if kind == "boss" else 80, rng=rng)
+                        rounds=BOSS_WINDOW if kind == "boss" else REGULAR_ROUND_CAP, rng=rng)
         if (out <= 0).mean() <= risk:
             return frac * build.hp
     return build.hp + 1  # cannot be made safe: heal anyway

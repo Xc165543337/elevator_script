@@ -43,8 +43,11 @@ of three normal fights is <1% lethal; otherwise it steps one floor at a time.
 - Healing exhausted (no potions, kits or field heals) -> extract at the next safe moment.
 - A fight still >10% deadly after all heals/buffs -> extract instead of fighting.
 - Rush only when 4 back-to-back normal fights (buff-free stats) are <1% deadly; otherwise single-step.
-- With `--sell-loot`: red/gold keep one unit (highest value) per item across the warehouse; purple/green/white
-  from each new run are sold; blue, supplies, crates, gear and pre-existing purple/green/white are kept.
+- Selling is optional and slow (one server call per item, ~10 min for a deep run's loot):
+  `--sell-loot off` (default) | `end` (once after the session's last run) | `each` (after every run);
+  `--sell-now` runs the red/gold pass by hand. Rules: red/gold keep one unit (highest value) per item
+  across the warehouse; purple/green/white from this session's runs are sold; blue, supplies, crates,
+  gear and pre-existing purple/green/white are kept.
 
 ## Components
 
@@ -56,6 +59,9 @@ of three normal fights is <1% lethal; otherwise it steps one floor at a time.
 | `optimize.py` | Searches the warehouse for the build with most bosses per run. |
 | `combat.py` | Live fight estimate from the in-run state (uses `model.py`), with online-calibrated damage factors (`calibration.json`). |
 | `policy.py` | `BossFarmPolicy.decide(state)` – pure decision function: fight/heal/buff/flee/extract, events, temp gear, collectible protection, rush vs. step. |
+| `mdp.py` | Markov decision process of a run (floor × effective HP × decision point), solved by backward induction; the heal budget is priced with a Lagrange multiplier. |
+| `markov_policy.py` | `MarkovPolicy`: `BossFarmPolicy` whose heal/fight/flee/rush/step decisions come from the solved tables (`--policy markov`). Tables are cached in `cache/`. |
+| `offline.py` | Plays complete runs offline against the game's own engine (from the bot repository), for policy comparisons. |
 | `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop when all rainbows are unlocked. |
 | `tests/` | Unit tests for the pure logic (`python -m pytest -q tests`). |
 | `docs/` | Game formulas, in-game guide dump, notes (`GAME_NOTES.md`). |
@@ -73,6 +79,9 @@ ELEVATOR_USER=your_account_or_qq
 ELEVATOR_PASS=your_password
 ```
 
+Instead of `.env`, the same variables can come from the environment (e.g. a cloud environment);
+`ELEVATOR_PASSWORD` is accepted as an alias of `ELEVATOR_PASS`.
+
 ## Usage
 
 ```bash
@@ -86,6 +95,42 @@ python farm.py --mode real --map tide --runs 3 --max-floor 40 --i-understand-rea
 Useful options: `--loadout field_surgery=12,critical_serum=8,triage_vial=10,coffee=10`,
 `--gold-reserve 1000000`, `--max-floor N`, `--delay 0.05`, `--balance-gear-score N`, `--no-restock`, `--verbose`.
 An interrupted run is resumed automatically on the next start.
+
+The default loadout carries every shop heal and smoke bombs at the live carry limit (50 each) plus two
+adrenaline shots. Real runs pursue two blessing sets (追寻): `--focus 6,8` picks them by number (or id,
+`B06,B08`); without it the pair chosen last time is reused, and the run is not started if there is none.
+Fallen players' bags (遗物盒) are returned for the bounty (捞尸, 55% of their value with 专业捞尸), unless they are
+worth at least `--relic-loot-value` (default 10,000,000 gold): those are looted (舔包), the safe box takes the
+most valuable items, and while loot worth that much is still outside it, the agent extracts at the next safe
+moment. Ordinary loot never triggers an extraction. New shining pieces are logged and, in a new `runs.csv`, written to its `shining` column (an existing file keeps its columns). `--rules legacy` plays
+with the older engine's rules (elites 15 rounds without a pause, more elites on deep floors); it is only
+meant for `offline.py`. Once per run the encounter odds the client shows are compared with the model (a
+mismatch is logged as a warning).
+
+## Markov policy (`--policy markov`)
+
+The run is modelled as a Markov decision process: state = floor, effective HP (HP + shield) and the
+decision point (between floors / normal or elite waiting / boss window); actions = heal with a given
+item, fight, flee, single step, rush; reward = +1 per boss kill. Transitions come from the combat model
+(`model.py`) and the server's encounter odds; the tables are solved backward from F4000 (~3 min, then
+cached per build). The heal stock is a run-long budget: instead of tracking the full inventory, each
+heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
+that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
+
+- No voluntary extraction (death and extraction both end the run; only bosses count). Collectible
+  banking still extracts; `MarkovConfig.extract_below` re-enables value-based extraction.
+- A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
+  the encounter instead.
+- Rush is chosen while it gives up at most `rush_tolerance` (0.002) expected bosses against single steps.
+- Elites under live rules are two segments: the first 8 rounds are valued with the best heals at the
+  pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
+  solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.
+
+Offline comparison against the game engine (needs a checkout of `SlimeTROH/longniang-qqbot`):
+
+```bash
+python offline.py --engine ../longniang-qqbot --runs 30 --policies threshold,markov
+```
 
 ## Browser userscript
 

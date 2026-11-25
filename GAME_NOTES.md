@@ -30,6 +30,60 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
 
 ## Mechanics that matter for an agent
 - **A regular `fight` resolves to the end** (victory or death) in one call → decide fight / flee / heal *before* engaging.
+- **Round caps** (confirmed in the server code):
+  - Regular monsters: at most 15 rounds per fight. A draw makes the monster retreat: no loot,
+    no kill-heal. A rush stops on that floor after a draw.
+  - Elites (live server since 2026-11-25): at most 16 rounds, with a pause after round 8 ("第 8 回合可整备"):
+    HP and the elite's state carry over and you can heal or change gear before resuming; a draw at 16 still
+    makes it retreat. The enemy shows `rounds_fought`. The public bot repository still has the old rule
+    (15 rounds, no pause); `--rules legacy` / `model.LEGACY_RULES` model it for offline runs.
+  - Extraction gatekeepers: at most 15 rounds per fight. A draw keeps both sides' HP and round count;
+    the fight resumes from there.
+  - Bosses: 4 rounds per `fight`. HP and the cumulative round count carry over; between windows you can
+    use potions, field items and change temp gear. A boss never retreats.
+- **Rush settings** (`rush_settings`): `floors` 3/5/10, `skip_valuable`, `event_mode` (pause / random / ignore
+  events) and `auto_elite`. With `auto_elite` on, a rush fights the first 8 rounds of an elite by itself and
+  stops at its pause (`连战至 F628 · 精英中场`). The agent sets 10 / skip / pause / no auto-elite at run start.
+- **Encounter odds** are shown for the next floor in `run.next_floor` (e.g. `📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)`).
+  Since 2026-11-25 the deep-floor mix is chest 34%, normal 41%, elite 12%, event 13% (was 34 / 33 / 20 / 13:
+  elites moved to normal monsters). The F1 row and the 12-floor blend are assumed unchanged.
+  `farm.py` compares the shown odds with `model.floor_mix` once per run and warns on a mismatch.
+- **Blessings (闻岑闪耀祝福, live since 2026-11-25).** A real run needs two pursued sets (`start` param
+  `focus: [set id, set id]`, chat `追寻 1 8`; a running run that lacks them shows `heirlooms.needs_focus` and
+  takes the `pursue` command). Each formal boss kill rolls once for a shining drop: 3% at F8, rising with
+  depth to 10%; a drop picks one of the two sets with equal odds, missing pieces weighted higher. Pieces go
+  into four independent slots (`equip_blessing {slot, piece}`, chat `祝福装配 槽位 编号`); 2 and 4 pieces of a
+  set give its bonuses, single pieces only +1/+2 to one stat. State: `heirlooms.{sets, pieces, owned, slots,
+  focus, needs_focus}`; set ids B01-B08. Set bonuses (2 pieces / 4 pieces):
+  | Set | 2 pieces | 4 pieces |
+  |---|---|---|
+  | B01 错线测绘簿 | hit +14 pp (max 100%) | first missed main attack per fight re-rolls as a hit |
+  | B02 末班灯列 | crit +10 pp above the cap (max 75%) | every 3rd main-attack hit on one enemy echoes 50% of its damage |
+  | B03 白线压舱契 | damage reduction +10 pp (max 65%) | first hit above 10% max HP per fight: 70% of the excess removed (cap 14% max HP) |
+  | B04 退件邮路 | dodge +8 pp (max 60%) | a dodge stores a ×1.45 charge for the next main-attack hit |
+  | B05 余温窑账 | crit multiplier +0.35 | crits crack enemy defence −12% each (max 2) |
+  | B06 缺刻值夜表 | pierce +12 pp (max 87%) | rounds 4, 8, 12, ...: act first and take ×0.65 damage (boss heavy hits too) |
+  | B07 逆风放线人 | follow-up +12 pp (max 82%) | first follow-up hit per fight heals 40% of its damage (cap 12% max HP) |
+  | B08 雪线留声筒 | leech +8 pp (max 50%; per-round leech heal still capped at 10% max HP) | once per run, a lethal monster hit leaves 20% max HP (before the doll) |
+- Wearing blessings also brings a deep-floor armour shred ("本层祝福深层破甲", up to 60%, growing with depth):
+  `player.secondary.condition.depth_shred` is the current floor's value (the formula is not known yet).
+  The agent applies it to enemy defence in live fights; the solved tables do not (conservative).
+  Modelled set effects: B06 2 pieces (pierce cap 87%) and 4 pieces (抢拍, rounds 4/8/... first, x0.65).
+- The public bot repository matches the live rules since f21568b (2026-11-25 22:34 +08:00). From it:
+  encounter rows F1 normal 36 / elite 3 / event 12 / chest 43 / relic 6 and from F30 41 / 12 / 13 / 26 / 8
+  (12-floor blend); shining drop chance min(10%, 3% + 7% x d / (d + 40)), d = floor - 8; two sets of two
+  pieces give a 44% depth-shred cap (full set 60%); mitigation is capped at 55% (B03 +10 pp).
+- **为了我所期待的** (`field_wish`): 0.1% per new floor on every map, one guaranteed per run on first reaching
+  F500. Using it wipes this run's pickups from the bag and safe box and kills the current enemy outright
+  (bosses included, normal rewards). Web API: `field_use {id: field_wish}` returns `state.wish_preview` with a
+  token (in the command result, not the state), then `wish_confirm {token}`. The Markov agent keeps it for
+  emergencies: the coming segment must stay >= 5% deadly after the best heal, and it never wipes 15M+ of loot.
+- **Relic bags (遗物盒)** are created where a player dies with 300+ gold of bag loot (not on extraction, the
+  doll, or new-player insurance) and last 24 h. They can appear within +-1 floor of that floor (not on a boss
+  floor) on the same map, as the 8% `relic` share of the encounter roll, unless claimed or reserved by
+  another player's run; local-group bags are preferred 80/20 over other groups'.
+- The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
+  `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.
 - Extraction ambush on harder maps (e.g. Zenith 39% from F4) unless the floor's monster was killed.
 - Full combat/drop/monster-growth formulas: `docs/formulas_zh.txt`. Item/map/affix reference: `docs/game_guide_zh.txt`.

@@ -11,9 +11,22 @@ export const MAPS: [string, string][] = [
     ['zenith', '天顶']
 ]
 
-/** 只带回复与肾上腺素；替身娃娃与扩容袋留在家里 */
-export const DEFAULT_LOADOUT =
-    'adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,critical_serum=50,field_surgery=50'
+/** 每种补给单次开局最多携带的数量（服务器限制） */
+export const MAX_CARRY = 50
+/** 商店能买到的回复药与烟雾弹带满，外加 2 支肾上腺素；手雷、护盾需合成（消耗材料），替身娃娃与扩容袋留在家里 */
+export const DEFAULT_LOADOUT = [
+    'adrenaline=2',
+    ...[
+        'coffee',
+        'ice_tea',
+        'triage_vial',
+        'barrier_serum',
+        'slow_serum',
+        'critical_serum',
+        'field_surgery',
+        'smoke'
+    ].map(id => `${id}=${MAX_CARRY}`)
+].join(',')
 
 export interface Settings {
     /** sim = 练习（免费、无收益）；real = 正式（消耗门票与金币） */
@@ -53,7 +66,10 @@ export const DEFAULT_SETTINGS: Settings = {
 }
 
 /** 旧版本的默认携带物资：保存的值仍是旧默认值（用户没改过）时换成新默认值 */
-const OLD_DEFAULT_LOADOUTS = new Set(['adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'])
+const OLD_DEFAULT_LOADOUTS = new Set([
+    'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2',
+    'adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,critical_serum=50,field_surgery=50'
+])
 
 /** 合并已保存的设置，丢弃类型不符的字段（旧版本或手动改坏的数据） */
 export function normalizeSettings(saved: unknown): Settings {

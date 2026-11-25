@@ -90,7 +90,7 @@ class GearModel:
         self.by_slot = {s: [i for i in self.items if i.slot == s] for s in SLOTS}
         loadout = state["player"]["loadout"]
         by_id = {i.equip_id: i for i in self.items}
-        self.current = tuple(by_id[loadout[s]] for s in SLOTS)
+        self.current = tuple(by_id[loadout[s]] for s in SLOTS if loadout.get(s) in by_id)  # skip empty / unknown slots
 
     def build(self, items: tuple[Item, ...], label: str = "") -> Build:
         stats = dict(self.base)

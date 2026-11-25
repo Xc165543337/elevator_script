@@ -108,6 +108,8 @@ export class Farmer {
     private stopAfterRun = false
     private wakeSleepers: (() => void)[] = []
     private lastCallEnd = 0
+    /** 本局正式下潜追寻的两套闪耀祝福（服务器没有祝福系统时为 null） */
+    private focus: string[] | null = null
     private tally: {
         t0: number
         steps: number
@@ -116,6 +118,8 @@ export class Farmer {
         floor: number
         outcome: string
         summary: string
+        /** 开局时持有的闪耀祝福部件（用于统计本局掉落） */
+        heirlooms: Record<string, number>
     }
     private progress: Progress
 
@@ -387,26 +391,65 @@ export class Farmer {
         this.log(`出售 ${sold} 件物品（约 ${int(earned)} 金币）`)
     }
 
+    /**
+     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）。
+     * 服务器未提供的设置（旧版本）保持不动。
+     */
     private async ensureRushSettings(): Promise<void> {
         const player = this.client.state.player
-        if (player.rush_floors !== 10 || !player.rush_skip_valuable) {
-            await this.call('rush_settings', { floors: 10, skip_valuable: true })
+        const wanted: [string, string, unknown, boolean][] = [
+            ['floors', 'rush_floors', 10, true],
+            ['skip_valuable', 'rush_skip_valuable', true, true],
+            ['event_mode', 'rush_event_mode', 'pause', false],
+            ['auto_elite', 'rush_auto_elite', false, false]
+        ]
+        const change: Record<string, unknown> = {}
+        for (const [key, field, want, required] of wanted) {
+            if ((required || field in player) && player[field] !== want) change[key] = want
+        }
+        if (!Object.keys(change).length) return
+        try {
+            await this.call('rush_settings', change)
+            this.log(`连战设置已调整：${JSON.stringify(change)}`)
+        } catch (err) {
+            if (!(err instanceof GameError)) throw err
+            this.log(`无法调整连战设置（${err.message}）`, 'warn') // 例如对局中不允许修改
         }
     }
 
     // ------------------------------------------------------------- 单局
+    /**
+     * 正式下潜追寻的两套闪耀祝福（2026-11-25 起必选）：沿用上次在开局页选定的两套。
+     * 服务器没有祝福系统时返回 null；尚未选过时返回 undefined。
+     */
+    private pursuit(): string[] | null | undefined {
+        const h = this.client.state.heirlooms
+        if (!h) return null
+        const focus = (h.focus || []) as string[]
+        return focus.length === 2 && focus[0] !== focus[1] ? [...focus] : undefined
+    }
+
+    /** 进行中的正式局仍缺追寻选择时（本局补选追寻）补发 */
+    private async ensurePursuit(): Promise<void> {
+        if (this.client.state.heirlooms?.needs_focus && this.focus) {
+            await this.call('pursue', { focus: this.focus })
+            this.log(`本局追寻祝福：${this.focus.join('、')}`)
+        }
+    }
+
     private async startRun(loadout: Record<string, number>): Promise<void> {
         const mapId = this.settings.map
         if (this.settings.mode === 'sim') {
             await this.call('simulate', { map_id: mapId })
             return
         }
+        const base = { map_id: mapId, ...(this.focus ? { focus: this.focus } : {}) }
         const owned = this.ownedSupplies()
         let supplies = Object.entries(loadout)
             .filter(([id]) => (owned.get(id) ?? 0) > 0)
             .map(([id, q]) => ({ id, quantity: Math.min(q, owned.get(id) ?? 0) }))
         try {
-            await this.call('start', { map_id: mapId, supplies })
+            await this.call('start', { ...base, supplies })
         } catch (err) {
             if (!(err instanceof GameError)) throw err
             // 携带上限未公开：数量逐次减半直到被接受
@@ -416,18 +459,38 @@ export class Farmer {
                     .filter(s => s.quantity > 1)
                     .map(s => ({ id: s.id, quantity: Math.floor(s.quantity / 2) }))
                 try {
-                    await this.call('start', { map_id: mapId, supplies })
+                    await this.call('start', { ...base, supplies })
                     return
                 } catch (retryErr) {
                     if (!(retryErr instanceof GameError)) throw retryErr
                 }
             }
-            await this.call('start', { map_id: mapId })
+            await this.call('start', base)
         }
     }
 
     private freshTally() {
-        return { t0: Date.now(), steps: 0, bosses: 0, rainbows: [] as string[], floor: 0, outcome: '', summary: '' }
+        return {
+            t0: Date.now(),
+            steps: 0,
+            bosses: 0,
+            rainbows: [] as string[],
+            floor: 0,
+            outcome: '',
+            summary: '',
+            heirlooms: { ...this.client?.state?.heirlooms?.owned } as Record<string, number>
+        }
+    }
+
+    /** 本局新得的闪耀祝福部件名（每件一项） */
+    private newHeirlooms(before: Record<string, number>): string[] {
+        const h = this.client.state?.heirlooms
+        if (!h) return []
+        const out: string[] = []
+        for (const [key, count] of Object.entries((h.owned || {}) as Record<string, number>)) {
+            for (let i = before[key] || 0; i < count; i++) out.push(h.pieces?.[key]?.name || key)
+        }
+        return out
     }
 
     /** 打到本局结束；计数保存在 tally 中，续局后仍然有效 */
@@ -435,6 +498,7 @@ export class Farmer {
         const t = this.tally
         while (this.client.state?.run) {
             this.checkStop()
+            await this.ensurePursuit()
             const state = this.client.state
             const run = state.run
             const floor = (t.floor = run.floor)
@@ -493,6 +557,7 @@ export class Farmer {
             t.outcome = result.outcome ?? t.outcome
         }
         this.saveCalibration()
+        for (const name of this.newHeirlooms(t.heirlooms)) this.log(`★ 闪耀掉落：${name}`, 'good')
         return {
             floor: t.floor,
             bosses: t.bosses,
@@ -564,6 +629,12 @@ export class Farmer {
                             this.log('没有可用门票，停止', 'warn')
                             break
                         }
+                        const focus = this.pursuit()
+                        if (focus === undefined) {
+                            this.log('正式下潜需要两套追寻祝福：请先在开局页选择两套后再运行', 'warn')
+                            break
+                        }
+                        this.focus = focus
                         if (s.restock) await this.restock(loadout)
                     }
                     await this.ensureRushSettings()
@@ -582,6 +653,8 @@ export class Farmer {
                         )
                         break
                     }
+                    await this.ensureRushSettings()
+                    this.focus = isSim ? null : (this.pursuit() ?? null)
                     this.tally = this.freshTally()
                     this.log(`继续 F${this.client.state.run.floor} 的进行中对局`)
                 }
