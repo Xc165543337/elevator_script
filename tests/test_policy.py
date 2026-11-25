@@ -293,3 +293,11 @@ def test_live_floor_mix_matches_the_odds_the_client_shows():
     assert parse_floor_odds("📊 F251：📡 100%「普怪」") is None and parse_floor_odds(None) is None
     with_relics = parse_floor_odds("📊 F300：箱30% 怪33% 精20% 奇13% 遗4%｜金红50.0%(红9.0%)")
     assert abs(with_relics["loot"] - 0.34) < 1e-9
+
+
+def test_refused_adrenaline_ends_the_shots_for_the_run():
+    from policy import Decision
+    p = BossFarmPolicy(CAL)
+    p.ban(616, Decision("use", {"index": 26}), item_id="adrenaline",
+          message="肾上腺素最多把本局攻击加成叠到 +50%，这针已保留。")
+    assert p.adrenaline_used == p.cfg.start_adrenaline

@@ -105,6 +105,8 @@ class BossFarmPolicy:
         self.banned.add((floor, decision.command, repr(sorted(decision.params.items()))))
         if item_id and "还在生效" in message:  # e.g. 缓释再生液 still healing: every copy is refused
             self.blocked_until[item_id] = floor + 3
+        if item_id == "adrenaline":   # the +50% attack cap is reached (e.g. a resumed run): no more shots
+            self.adrenaline_used = self.cfg.start_adrenaline
 
     def _item_blocked(self, run: dict, item_id: str) -> bool:
         return run["floor"] <= self.blocked_until.get(item_id, -1)
