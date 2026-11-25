@@ -234,3 +234,9 @@ def test_price_choice_counts_smokes(tables):
     some = tables.price_index(values, 0.0, 5)
     assert tables.smoke_prices[none] >= 1.0                          # no smokes: a price that never uses one
     assert tables.smoke_prices[some] < max(tables.smoke_prices)
+
+
+def test_single_steps_while_slow_serum_regen_is_pending(policy):
+    s = state(hp=300, bag=bag_of("coffee"), controls=("rush", "down", "extract"))
+    s["run"]["recovery"] = {"left": 2, "fraction": 0.16, "last_floor": 99}
+    assert policy.decide(s).command == "down"

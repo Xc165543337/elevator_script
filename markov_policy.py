@@ -86,6 +86,14 @@ def heal_stock(run: dict) -> float:
     return total
 
 
+def entry_heal_pending(run: dict) -> bool:
+    """HP rises on the next floor entry (slow serum regen, field regen). The server's rush stop rule
+    (HP <= 50%) reads HP after that tick, which the tables do not model - so a rush started low could
+    auto-fight a deep monster at barely half HP."""
+    recovery = run.get("recovery") or {}
+    return bool(recovery.get("left")) or field_items.active_mods(run).get("regen", 0.0) > 0
+
+
 def smoke_count(run: dict) -> int:
     return sum(it.get("quantity") or 1 for it in run.get("bag") or [] if it.get("id") == "smoke")
 
@@ -401,6 +409,9 @@ class MarkovPolicy(BossFarmPolicy):
         if option and q_heal > q_go + self.mcfg.heal_margin:
             return Decision(option.decision.command, option.decision.params,
                             f"{summary} -> {option.decision.reason} ({q_heal:.2f})")
+        if "rush" in ctr and "down" in ctr and entry_heal_pending(run):
+            return Decision("down", {}, summary + " -> step (healing on floor entry pending: a rush would"
+                                                  " auto-fight once it lifts HP above 50%)")
         if "rush" in ctr and (q_rush >= q_step - self.mcfg.rush_tolerance or "down" not in ctr):
             return Decision("rush", {}, summary + " -> rush")
         if "down" in ctr:
