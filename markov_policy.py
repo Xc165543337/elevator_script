@@ -23,7 +23,9 @@ from typing import Callable
 
 import numpy as np
 
+import field as field_items
 from combat import Calibration
+from field import FieldPrep
 from mdp import (BOSS_WINDOWS, FIELD_HEALS, SHOP_HEALS, HealItem, MdpConfig, ValueTables, _Closure,
                  flee_chance, flee_hit, interp_matrix, load_tables, save_tables, solve, tables_key,
                  with_calibration)
@@ -36,9 +38,11 @@ class MarkovConfig:
     from_floor: int = 30            # shallower floors are trivial and the build is still ramping up
     rush_tolerance: float = 0.02    # expected bosses a rush may give up against single steps
     heal_margin: float = 0.002      # a heal / flee must beat the alternative by this many bosses
+    prep_margin: float = 0.01       # a field buff / grenade (no budget price) must gain this many bosses
+    prep_pairs: int = 3             # best single preparations combined pairwise (buff + buff synergies)
     extract_below: float = 0.0      # extract once expected further bosses drop below this (0 = never)
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
-    build_tolerance: float = 0.03   # relative stat drift before the tables are re-solved
+    build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
     cache_dir: str = "cache"
     mdp: MdpConfig = field(default_factory=MdpConfig)
 
@@ -53,6 +57,12 @@ _HEAL_TEXT = re.compile(r"回复 (\d+)% 最大生命")
 
 
 def _field_heal_spec(item: dict) -> HealItem | None:
+    """Instant field item (heal and / or shield) as a HealItem; None for everything else."""
+    raw = field_items.SPECS.get(item.get("id", ""))
+    if raw is not None:
+        if raw["mode"] != "instant" or raw.get("cost_hp") or not (raw.get("heal") or raw.get("shield")):
+            return None
+        return HealItem(raw["name"], heal=raw.get("heal", 0.0), shield_add=raw.get("shield", 0.0))
     spec = FIELD_HEALS.get(item.get("name", ""))
     if spec is None and item.get("healing"):
         m = _HEAL_TEXT.search(item.get("description", ""))
@@ -210,19 +220,8 @@ class MarkovPolicy(BossFarmPolicy):
         out[0] = 0.0
         return out
 
-    def _free_help(self, run: dict, boss: bool, death: float, tag: str) -> Decision | None:
-        """Field buffs and grenades are free: use them when the coming fight is still risky."""
-        limit = self.cfg.max_boss_window_risk if boss else self.cfg.max_death_risk
-        if death <= limit:
-            return None
-        buff = self._combat_buff(run, boss)
-        if buff:
-            buff.reason = f"{tag}: death {death:.1%} -> {buff.reason}"
-            return buff
-        grenade = self._bag_item(run, "grenade")
-        if grenade and self._allowed(run["floor"], "use", {"index": grenade["index"]}):
-            return Decision("use", {"index": grenade["index"]}, f"{tag}: grenade (death {death:.1%})")
-        return None
+    def _live_build(self, state: dict) -> Build:
+        return self._calibrated(field_items.live_build(state["run"], self.current_build(state)))
 
     # ------------------------------------------------------------------ encounters
     def _fight(self, state: dict, ctr: dict) -> Decision:
@@ -231,93 +230,126 @@ class MarkovPolicy(BossFarmPolicy):
         tables = None if enemy.get("ambush") else self._tables(state)
         if tables is None:
             return super()._fight(state, ctr)
-        if enemy.get("boss"):
-            return self._boss(state, tables)
-        return self._regular(state, ctr, tables)
+        return self._encounter(state, ctr, tables)
 
-    def _regular(self, state: dict, ctr: dict, tables: ValueTables) -> Decision:
+    def _fight_curve(self, state: dict, tables: ValueTables, li: int, build: Build,
+                     enemy: dict) -> tuple[np.ndarray, np.ndarray]:
+        """(value, death probability) of fighting now, for every effective-HP grid point.
+        Regular enemies: the whole fight, then the ready table. Bosses: one window, then the boss table."""
+        g, grid = state["run"]["floor"], tables.grid
+        start, hp, shield = self._sim_starts(grid, build)
+        ehp = np.full(len(start), float(enemy["hp"]))
+        if enemy.get("boss"):
+            fought = int(enemy.get("rounds_fought") or 0)
+            window = fought // BOSS_WINDOW + 1
+            boss_max = float(enemy.get("max_hp") or enemy["hp"])
+            hp, shield, ehp, *_ = fight(build, hp, shield, enemy, boss=True, ehp=ehp, start_round=fought + 1,
+                                        rounds=BOSS_WINDOW - fought % BOSS_WINDOW, rng=self._rng)
+            alive = hp > 0
+            nxt = tables.boss[g][min(window + 1, BOSS_WINDOWS) - 1][li]                 # (N, Nb)
+            we = interp_matrix((hp + shield) / build.hp, grid)
+            wb = interp_matrix(np.maximum(ehp, 0.0) / boss_max, tables.boss_grid)
+            win_value = 1.0 + float(np.interp(1.0, grid, tables.ready[g][li]))
+            after = np.where(ehp <= 0, win_value, np.einsum("sn,nb,sb->s", we, nxt, wb))
+        else:
+            hp, shield, *_ = fight(build, hp, shield, enemy, boss=False, ehp=ehp, rounds=REGULAR_ROUND_CAP,
+                                   rng=self._rng)
+            alive = hp > 0
+            after = np.interp((hp + shield) / build.hp, grid, tables.ready[g][li])
+        value = isotonic(self._per_point(start, np.where(alive, after, 0.0), len(grid)))
+        death = 1.0 - self._per_point(start, alive.astype(float), len(grid))
+        death[0] = 1.0
+        return value, death
+
+    def _encounter(self, state: dict, ctr: dict, tables: ValueTables) -> Decision:
+        """Heal / field buff / grenade / flee / fight, whichever gives the most expected bosses.
+        Heals are priced by the heal budget; field buffs are free but must gain `prep_margin`.
+        Every option's value already includes the best heals that could follow it."""
         run = state["run"]
         enemy = run["event"]["enemy"]
-        g, e, max_hp = run["floor"], effective_hp(run), float(run["max_hp"])
-        kind = "elite" if enemy.get("elite") else "normal"
-        tag = f"{kind} {enemy.get('name')}"
+        boss = bool(enemy.get("boss"))
+        g, e, max_hp, grid = run["floor"], effective_hp(run), float(run["max_hp"]), tables.grid
+        kind = "boss" if boss else "elite" if enemy.get("elite") else "normal"
         stock = heal_stock(run)
-        li = tables.price_index(tables.at(tables.encounter[kind], g, e), stock)
-        lam, grid = float(tables.lambdas[li]), tables.grid
-        ready = tables.ready[g][li]
-        build = self._calibrated(self.current_build(state))
+        if boss:
+            window = int(enemy.get("rounds_fought") or 0) // BOSS_WINDOW + 1
+            values = tables.boss_at(g, window, e, enemy["hp"] / max(1.0, float(enemy.get("max_hp") or enemy["hp"])))
+        else:
+            values = tables.at(tables.encounter[kind], g, e)
+        li = tables.price_index(values, stock)
+        lam = float(tables.lambdas[li])
+        heals = self._heal_options(run, True)
+        closure = _Closure([o.item for o in heals], grid, max_hp, np.array([lam]), self.mcfg.mdp.heal_iterations)
 
-        start, hp, shield = self._sim_starts(grid, build)
-        hp, shield, *_ = fight(build, hp, shield, enemy, boss=False, ehp=np.full(len(start), float(enemy["hp"])),
-                               rounds=REGULAR_ROUND_CAP, rng=self._rng)
-        alive = hp > 0
-        after = np.where(alive, np.interp((hp + shield) / build.hp, grid, ready), 0.0)
-        fight_curve = isotonic(self._per_point(start, after, len(grid)))
-        death_curve = 1.0 - self._per_point(start, alive.astype(float), len(grid))
-        death_curve[0] = 1.0
+        def with_heals(curve: np.ndarray) -> float:
+            return float(np.interp(e, grid, closure(curve[None, :])[0]))
+
+        build = self._live_build(state)
+        fight_curve, death_curve = self._fight_curve(state, tables, li, build, enemy)
+        death = float(np.interp(e, grid, death_curve))
+        tag = f"{kind} {enemy.get('name')}"
+        summary = f"{tag}: death {death:.1%}, lam {lam:g}, stock {stock:.1f}"
+
+        # options that do not consume a priced heal: fight now, flee, field buffs, grenade
         curve = fight_curve
         flee_q = -np.inf
-        if "flee" in ctr:
+        if "flee" in ctr and not boss:
             m = re.search(r"(\d+)%", ctr["flee"].get("label", ""))
             p = int(m.group(1)) / 100 if m else flee_chance(build, g)
             fail = interp_matrix(np.maximum(grid - flee_hit(build, enemy), 0.0), grid) @ fight_curve
-            flee_curve = p * ready + (1 - p) * fail
+            flee_curve = p * tables.ready[g][li] + (1 - p) * fail
             flee_curve[0] = 0.0
             flee_q = float(np.interp(e, grid, flee_curve))
             curve = np.maximum(fight_curve, flee_curve)
-        option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, self._heal_options(run, True))
+        q_base = with_heals(curve)
+        best_prep, q_prep = self._best_preparation(state, tables, li, build, enemy, with_heals)
+
+        option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, heals)
+        if best_prep is not None and q_prep > max(q_base, q_heal) + self.mcfg.prep_margin:
+            return Decision(best_prep[0], best_prep[1], f"{summary} -> {best_prep[2]} ({q_prep:.2f} vs {q_base:.2f})")
+        if option and q_heal > q_go + self.mcfg.heal_margin:
+            return Decision(option.decision.command, option.decision.params,
+                            f"{summary} -> {option.decision.reason} ({q_heal:.2f} vs {q_go:.2f})")
         fight_q = float(np.interp(e, grid, fight_curve))
-        death = float(np.interp(e, grid, death_curve))
-        summary = f"{tag}: fight {fight_q:.2f} (death {death:.1%}), lam {lam:g}, stock {stock:.1f}"
-        if option and q_heal > q_go + self.mcfg.heal_margin:
-            return Decision(option.decision.command, option.decision.params,
-                            f"{summary} -> {option.decision.reason} ({q_heal:.2f})")
         if flee_q > fight_q + self.mcfg.heal_margin:
-            return Decision("flee", {}, f"{summary} -> flee ({flee_q:.2f})")
-        help_ = self._free_help(run, False, death, tag)
-        if help_:
-            return help_
-        return Decision("fight", {}, summary)
+            return Decision("flee", {}, f"{summary} -> flee ({flee_q:.2f} vs {fight_q:.2f})")
+        return Decision("fight", {}, f"{summary} -> fight ({fight_q:.2f})")
 
-    def _boss(self, state: dict, tables: ValueTables) -> Decision:
+    def _best_preparation(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict,
+                          with_heals: Callable[[np.ndarray], float]) -> tuple[tuple | None, float]:
+        """Best first step among field buffs, pairs of them and a grenade, valued with heals after it.
+        Returns ((command, params, label) or None, value)."""
         run = state["run"]
-        enemy = run["event"]["enemy"]
-        g, e, max_hp = run["floor"], effective_hp(run), float(run["max_hp"])
-        fought = int(enemy.get("rounds_fought") or 0)
-        window = fought // BOSS_WINDOW + 1
-        boss_frac = enemy["hp"] / max(1.0, float(enemy.get("max_hp") or enemy["hp"]))
-        tag = f"boss {enemy.get('name')} w{window}"
-        stock = heal_stock(run)
-        li = tables.price_index(tables.boss_at(g, window, e, boss_frac), stock)
-        lam, grid = float(tables.lambdas[li]), tables.grid
-        next_values = tables.boss[g][min(window + 1, BOSS_WINDOWS) - 1][li]          # (N, Nb)
-        win_value = 1.0 + float(np.interp(1.0, grid, tables.ready[g][li]))
-        build = self._calibrated(self.current_build(state))
-
-        start, hp, shield = self._sim_starts(grid, build)
-        rounds = BOSS_WINDOW - fought % BOSS_WINDOW
-        hp, shield, ehp, *_ = fight(build, hp, shield, enemy, boss=True, ehp=np.full(len(start), float(enemy["hp"])),
-                                    start_round=fought + 1, rounds=rounds, rng=self._rng)
-        alive = hp > 0
-        won = alive & (ehp <= 0)
-        going = alive & (ehp > 0)
-        we = interp_matrix((hp + shield) / build.hp, grid)
-        wb = interp_matrix(np.maximum(ehp, 0.0) / float(enemy.get("max_hp") or enemy["hp"]), tables.boss_grid)
-        cont = np.einsum("sn,nb,sb->s", we, next_values, wb)
-        after = np.where(won, win_value, np.where(going, cont, 0.0))
-        curve = isotonic(self._per_point(start, after, len(grid)))
-        death_curve = 1.0 - self._per_point(start, alive.astype(float), len(grid))
-        death_curve[0] = 1.0
-        option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, self._heal_options(run, True))
-        death = float(np.interp(e, grid, death_curve))
-        summary = f"{tag}: window {q_go:.2f} (death {death:.1%}), lam {lam:g}, stock {stock:.1f}"
-        if option and q_heal > q_go + self.mcfg.heal_margin:
-            return Decision(option.decision.command, option.decision.params,
-                            f"{summary} -> {option.decision.reason} ({q_heal:.2f})")
-        help_ = self._free_help(run, True, death, tag)
-        if help_:
-            return help_
-        return Decision("fight", {}, summary)
+        floor = run["floor"]
+        preps = [p for p in field_items.fight_preparations(run)
+                 if self._allowed(floor, "field_use", {"id": p.id})]
+        scored: list[tuple[float, FieldPrep, Build, dict]] = []
+        for prep in preps:
+            b, mods = field_items.apply(run, build, prep)
+            scored.append((with_heals(self._fight_curve(state, tables, li, b, enemy)[0]), prep, b, mods))
+        scored.sort(key=lambda x: -x[0])
+        best, best_q = None, -np.inf
+        if scored:
+            q, prep = scored[0][0], scored[0][1]
+            best, best_q = ("field_use", {"id": prep.id}, f"field {prep.name}"), q
+        top = scored[: self.mcfg.prep_pairs]
+        for i, (_, first, b1, mods1) in enumerate(top):
+            for _, second, _, _ in top[i + 1:]:
+                if not field_items.compatible(first, second, run):
+                    continue
+                b2, _ = field_items.apply(run, b1, second, mods1)
+                q = with_heals(self._fight_curve(state, tables, li, b2, enemy)[0])
+                if q > best_q:
+                    best, best_q = ("field_use", {"id": first.id}, f"field {first.name} (+ {second.name})"), q
+        grenade = self._bag_item(run, "grenade")
+        boss_capped = enemy.get("boss") and (enemy.get("grenades", 0) >= 2 or enemy["hp"] <= 1)
+        if grenade and not boss_capped and self._allowed(floor, "use", {"index": grenade["index"]}):
+            cut = max(1, int(enemy["hp"] * (0.12 if enemy.get("boss") else 0.30)))
+            weakened = {**enemy, "hp": max(1 if enemy.get("boss") else 0, enemy["hp"] - cut)}
+            q = with_heals(self._fight_curve(state, tables, li, build, weakened)[0])
+            if q > best_q:
+                best, best_q = ("use", {"index": grenade["index"]}, "grenade"), q
+        return best, best_q
 
     # ------------------------------------------------------------------ between floors
     def _advance(self, state: dict, ctr: dict) -> Decision:

@@ -37,7 +37,7 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 1            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 2            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items

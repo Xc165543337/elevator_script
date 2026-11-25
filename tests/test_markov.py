@@ -148,3 +148,45 @@ def test_isotonic_fit_is_monotone_and_mean_preserving():
     assert np.all(np.diff(fit) >= 0)
     assert fit.sum() == pytest.approx(y.sum())
     assert np.allclose(isotonic(np.arange(5.0)), np.arange(5.0))
+
+
+# ------------------------------------------------------------------ field items
+def test_field_effects_follow_server_specs():
+    import field
+    run = {"stats": {"hp": 666, "atk": 120, "def": 20, "agi": 30, "luk": 21},
+           "field_slots": [{"id": "field_lamp"}, None], "field_buffs": [], "field_charges": [{"id": "field_tape", "left": 2}]}
+    live = field.live_build(run, BUILD)
+    spot = field.SPECS["field_lamp"]["mods"]                       # 促销聚光灯: crit +13%, mitigation -10%
+    assert live.crit_bonus == pytest.approx(spot["crit"]) and live.reduction == pytest.approx(spot["mitigation"])
+    assert live.guard_hits == 2 and live.guard_reduction == field.SPECS["field_tape"]["reduction"]
+    plate = field.FieldPrep("field_plate", "应急陶板", field.SPECS["field_plate"])  # defence +50% of base
+    boosted, _ = field.apply(run, BUILD, plate)
+    assert boosted.defense == pytest.approx(BUILD.defense + 0.5 * 20)
+
+
+def test_guard_charges_cut_landed_hits():
+    from dataclasses import replace
+    from model import fight
+    foe_ = {"hp": 10**9, "atk": 200, "def": 0, "agi": 0}
+    base = replace(BUILD, agi=0, leech=0, vampire=0)
+    rng = np.random.default_rng(3)
+    plain = fight(base, np.full(2000, 1e6), np.zeros(2000), foe_, boss=False, rounds=1, rng=rng)[0]
+    guarded = fight(replace(base, guard_hits=1, guard_reduction=0.42), np.full(2000, 1e6), np.zeros(2000), foe_,
+                    boss=False, rounds=1, rng=rng)[0]
+    ratio = (1e6 - guarded[guarded < 1e6]).mean() / (1e6 - plain[plain < 1e6]).mean()
+    assert ratio == pytest.approx(0.58, abs=0.02)
+
+
+def test_uses_a_defensive_buff_before_a_risky_fight(policy):
+    s = state(floor=150, hp=380, foe=foe("elite", 150))
+    s["run"]["field"] = [{"id": "field_plate", "name": "应急陶板", "quantity": 1}]
+    s["run"]["stats"] = s["run"]["effective_stats"]
+    decision = policy.decide(s)
+    assert decision.command == "field_use" and decision.params == {"id": "field_plate"}, decision.reason
+
+
+def test_keeps_buffs_for_a_safe_fight(policy):
+    s = state(floor=60, hp=666, foe=foe("normal", 60))
+    s["run"]["field"] = [{"id": "field_plate", "name": "应急陶板", "quantity": 1}]
+    s["run"]["stats"] = s["run"]["effective_stats"]
+    assert policy.decide(s).command == "fight"

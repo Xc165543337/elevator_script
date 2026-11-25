@@ -93,6 +93,12 @@ class Build:
     reduction: float = 0.0      # 减伤 (negative = more damage taken)
     def_pct: float = 0.0        # temp-gear defence %
     atk_pct: float = 0.0        # temp-gear / run attack %
+    dodge_bonus: float = 0.0    # field dodge modifier (player dodge is capped at 52%)
+    guard_hits: int = 0         # field guard (防碎封箱带 ...): the next N landed enemy hits are reduced
+    guard_reduction: float = 0.0
+    burst_hits: int = 0         # field burst (热敏收银纸 ...): the next N main attacks are charged
+    burst_mult: float = 1.0
+    burst_sure: bool = False    # charged attacks cannot be dodged
     label: str = ""
 
     @property
@@ -105,7 +111,7 @@ class Build:
 
     @property
     def dodge(self) -> float:
-        return min(0.52, max(0.0, min(0.45, 0.03 + 0.004 * self.agi)))
+        return min(0.52, max(0.0, min(0.45, 0.03 + 0.004 * self.agi) + self.dodge_bonus))
 
     def crit(self, low_hp: bool = False) -> float:
         base = min(0.60, (0.05 + 0.005 * max(0.0, self.luk)) * (2 if (low_hp and self.desperate) else 1))
@@ -134,6 +140,8 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
 
     For bosses pass rounds=4-((start_round-1)%4) to stop at the end of a window.
     Samples with hp<=0 are dead; ehp<=0 means the enemy died (kill heal already applied).
+    Follows the server's order: the first-round bonus and charges apply to the main attack only, a
+    follow-up only comes while the enemy still lives, guard charges are spent by landed hits.
     """
     n = hp.shape[0]
     hp, shield = hp.astype(float).copy(), shield.astype(float).copy()
@@ -146,6 +154,8 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
     e_raw = foe["atk"] * 100 / (100 + 2.5 * build.eff_def) * (1 - build.reduction) * build.taken_mult
     boss_mult = 1 + min(1.2, build.boss_bonus) if boss else 1.0
     player_first = build.agi >= foe["agi"]
+    guard_left = np.full(n, build.guard_hits)
+    burst_left = np.full(n, build.burst_hits)
     used = np.zeros(n)
     active = (hp > 0) & (ehp > 0)
     for i in range(rounds):
@@ -154,22 +164,25 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
         t = start_round + i
         used[active] += 1
 
+        def strike(mult, atk_mult, crit_p, hit):
+            dmg = np.maximum(1.0, np.floor(p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n)))
+            dmg = np.floor(np.where(rng.random(n) < crit_p, dmg * build.crit_mult, dmg))
+            return np.maximum(1.0, np.floor(dmg * build.dealt_mult)) * hit
+
         def player_attack(mask):
             nonlocal hp
             low = hp < 0.3 * max_hp
             mult = (1 + min(0.75, (t - 1) * build.berserk)) * boss_mult
-            if t == 1:
-                mult *= 1 + build.heavy
             atk_mult = np.where(low & build.desperate, 1.75, 1.0)
             crit_p = np.where(low, build.crit(True), build.crit(False))
-            hit = rng.random(n) >= edodge
-            crit = rng.random(n) < crit_p
-            dmg = p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n) * np.where(crit, build.crit_mult, 1.0)
-            dmg = np.floor(dmg * build.dealt_mult) * hit
+            charged = mask & (burst_left > 0)
+            burst_left[charged] -= 1
+            sure = charged & build.burst_sure
+            main = mult * (1 + build.heavy if t == 1 else 1.0) * np.where(charged, build.burst_mult, 1.0)
+            dmg = strike(main, atk_mult, crit_p, ((rng.random(n) >= edodge) | sure) & mask)
             if build.combo > 0:
-                extra = (rng.random(n) < min(0.7, build.combo)) & (rng.random(n) >= edodge)
-                dmg = dmg + np.floor(0.6 * p_raw * mult * atk_mult * rng.uniform(0.9, 1.1, n) * build.dealt_mult) * extra
-            dmg = np.maximum(dmg, hit * 1.0) * mask
+                extra = mask & (ehp > dmg) & (rng.random(n) < min(0.7, build.combo)) & (rng.random(n) >= edodge)
+                dmg = dmg + strike(0.6 * mult, atk_mult, crit_p, extra)
             dealt = np.minimum(dmg, np.maximum(ehp, 0))
             np.subtract(ehp, dmg, out=ehp)
             if build.leech > 0:
@@ -182,6 +195,9 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
             dmg = e_raw * rng.uniform(0.9, 1.1, n)
             if boss and t % BOSS_WINDOW == 0:
                 dmg = dmg * BOSS_HEAVY
+            guarded = hit & (guard_left > 0)
+            dmg = np.where(guarded, dmg * (1 - build.guard_reduction), dmg)
+            guard_left[guarded] -= 1
             dmg = np.floor(np.maximum(dmg, 1)) * hit
             absorbed = np.minimum(shield, dmg)
             shield -= absorbed

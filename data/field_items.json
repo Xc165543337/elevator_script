@@ -1,0 +1,649 @@
+{
+ "_source": "SlimeTROH/longniang-qqbot plugins/endless_elevator/content.json expedition.field_items",
+ "mod_caps": {
+  "atk": [
+   -0.5,
+   1.2
+  ],
+  "defense": [
+   -0.55,
+   1.4
+  ],
+  "agi": [
+   -30,
+   55
+  ],
+  "crit": [
+   -0.25,
+   0.4
+  ],
+  "dodge": [
+   -0.25,
+   0.3
+  ],
+  "flee": [
+   -0.25,
+   0.4
+  ],
+  "leech": [
+   0,
+   0.42
+  ],
+  "combo": [
+   0,
+   0.7
+  ],
+  "mitigation": [
+   -0.5,
+   0.55
+  ],
+  "pierce": [
+   0,
+   0.55
+  ],
+  "first": [
+   0,
+   0.85
+  ],
+  "boss": [
+   0,
+   0.85
+  ],
+  "thorns": [
+   0,
+   0.65
+  ],
+  "regen": [
+   0,
+   0.12
+  ]
+ },
+ "items": {
+  "field_wrap": {
+   "name": "速凝绷带",
+   "map": "all",
+   "mode": "instant",
+   "weight": 8,
+   "heal": 0.28
+  },
+  "field_foil": {
+   "name": "折叠盾片",
+   "map": "all",
+   "mode": "instant",
+   "weight": 7,
+   "shield": 38
+  },
+  "field_drive": {
+   "name": "红线驱动针",
+   "map": "all",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 3,
+   "mods": {
+    "atk": 0.24
+   }
+  },
+  "field_spring": {
+   "name": "轻步弹簧",
+   "map": "all",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 4,
+   "mods": {
+    "agi": 14,
+    "flee": 0.08
+   }
+  },
+  "field_plate": {
+   "name": "应急陶板",
+   "map": "all",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 3,
+   "mods": {
+    "defense": 0.5
+   }
+  },
+  "field_siphon": {
+   "name": "虹吸滴管",
+   "map": "all",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 2,
+   "mods": {
+    "leech": 0.22
+   }
+  },
+  "field_ratchet": {
+   "name": "连动棘轮",
+   "map": "all",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 3,
+   "mods": {
+    "combo": 0.38
+   }
+  },
+  "field_harness": {
+   "name": "通勤束带",
+   "map": "all",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "defense": 0.15,
+    "agi": 5
+   }
+  },
+  "field_game_balance": {
+   "name": "策划的平衡性调整",
+   "map": "all",
+   "mode": "wear",
+   "weight": 3,
+   "damage_multiplier": 2
+  },
+  "field_sample": {
+   "name": "试吃能量包",
+   "map": "mall",
+   "mode": "instant",
+   "weight": 8,
+   "heal": 0.18,
+   "shield": 16
+  },
+  "field_receipt": {
+   "name": "热敏收银纸",
+   "map": "mall",
+   "mode": "burst",
+   "weight": 4,
+   "hits": 2,
+   "mult": 1.65
+  },
+  "field_apron": {
+   "name": "厚帆布围裙",
+   "map": "mall",
+   "mode": "wear",
+   "weight": 5,
+   "mods": {
+    "defense": 0.3,
+    "agi": -3
+   }
+  },
+  "field_caster": {
+   "name": "购物车万向轮",
+   "map": "mall",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 3,
+   "mods": {
+    "agi": 18,
+    "atk": 0.08
+   }
+  },
+  "field_tape": {
+   "name": "防碎封箱带",
+   "map": "mall",
+   "mode": "guard",
+   "weight": 5,
+   "hits": 3,
+   "reduction": 0.42
+  },
+  "field_whistle": {
+   "name": "保安巡场哨",
+   "map": "mall",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 3,
+   "mods": {
+    "first": 0.42,
+    "dodge": 0.07
+   }
+  },
+  "field_lamp": {
+   "name": "促销聚光灯",
+   "map": "mall",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "crit": 0.13,
+    "mitigation": -0.1
+   }
+  },
+  "field_clearance": {
+   "name": "清仓红牌",
+   "map": "mall",
+   "mode": "timed",
+   "weight": 2,
+   "floors": 2,
+   "mods": {
+    "boss": 0.55,
+    "defense": -0.2
+   }
+  },
+  "field_air": {
+   "name": "检修氧气瓶",
+   "map": "subway",
+   "mode": "instant",
+   "weight": 7,
+   "heal": 0.34
+  },
+  "field_gate": {
+   "name": "闸机缓冲器",
+   "map": "subway",
+   "mode": "guard",
+   "weight": 5,
+   "hits": 2,
+   "reduction": 0.7
+  },
+  "field_rail": {
+   "name": "牵引线圈",
+   "map": "subway",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 4,
+   "mods": {
+    "atk": 0.22,
+    "agi": 7
+   }
+  },
+  "field_ticket": {
+   "name": "站务巡检背心",
+   "map": "subway",
+   "mode": "wear",
+   "weight": 4,
+   "mods": {
+    "flee": 0.17,
+    "dodge": 0.045
+   }
+  },
+  "field_echo": {
+   "name": "站台回声匣",
+   "map": "subway",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 2,
+   "mods": {
+    "combo": 0.58
+   }
+  },
+  "field_spike": {
+   "name": "道钉束",
+   "map": "subway",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 3,
+   "mods": {
+    "thorns": 0.38,
+    "defense": 0.18
+   }
+  },
+  "field_strobe": {
+   "name": "车头频闪器",
+   "map": "subway",
+   "mode": "burst",
+   "weight": 3,
+   "hits": 2,
+   "mult": 1.8,
+   "sure": true
+  },
+  "field_flywheel": {
+   "name": "超速飞轮",
+   "map": "subway",
+   "mode": "wear",
+   "weight": 2,
+   "mods": {
+    "agi": 19,
+    "atk": 0.11,
+    "mitigation": -0.19
+   }
+  },
+  "field_gel": {
+   "name": "培养舱修复胶",
+   "map": "abyss",
+   "mode": "instant",
+   "weight": 7,
+   "heal": 0.22,
+   "shield": 32
+  },
+  "field_synapse": {
+   "name": "双突触接片",
+   "map": "abyss",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 3,
+   "mods": {
+    "combo": 0.42,
+    "pierce": 0.12
+   }
+  },
+  "field_dialysis": {
+   "name": "透析虹吸泵",
+   "map": "abyss",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "leech": 0.14,
+    "defense": -0.14
+   }
+  },
+  "field_chitin": {
+   "name": "培育几丁甲",
+   "map": "abyss",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 4,
+   "mods": {
+    "mitigation": 0.2,
+    "agi": -5
+   }
+  },
+  "field_lens": {
+   "name": "靶标显微镜",
+   "map": "abyss",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 3,
+   "mods": {
+    "crit": 0.18,
+    "pierce": 0.18
+   }
+  },
+  "field_capsule": {
+   "name": "止损胶囊",
+   "map": "abyss",
+   "mode": "guard",
+   "weight": 4,
+   "hits": 1,
+   "reduction": 0.92
+  },
+  "field_incubator": {
+   "name": "再生温床",
+   "map": "abyss",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "regen": 0.055,
+    "atk": -0.09
+   }
+  },
+  "field_singularity": {
+   "name": "概念集合体-公正",
+   "map": "abyss",
+   "mode": "instant",
+   "weight": 1,
+   "judgement": true
+  },
+  "field_seal": {
+   "name": "鎏金押金章",
+   "map": "auction",
+   "mode": "instant",
+   "weight": 7,
+   "shield": 62
+  },
+  "field_gavel": {
+   "name": "追槌发条",
+   "map": "auction",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 3,
+   "mods": {
+    "combo": 0.46,
+    "first": 0.17
+   }
+  },
+  "field_glove": {
+   "name": "鉴定师单手套",
+   "map": "auction",
+   "mode": "wear",
+   "weight": 4,
+   "mods": {
+    "pierce": 0.22,
+    "crit": 0.06
+   }
+  },
+  "field_bid": {
+   "name": "封顶竞价牌",
+   "map": "auction",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 2,
+   "mods": {
+    "boss": 0.5,
+    "atk": 0.12
+   }
+  },
+  "field_escrow": {
+   "name": "清算托管匣",
+   "map": "auction",
+   "mode": "guard",
+   "weight": 4,
+   "hits": 4,
+   "reduction": 0.38
+  },
+  "field_dividend": {
+   "name": "血色分红券",
+   "map": "auction",
+   "mode": "timed",
+   "weight": 3,
+   "floors": 3,
+   "mods": {
+    "leech": 0.3,
+    "mitigation": -0.14
+   },
+   "cost_hp": 0.13
+  },
+  "field_armor": {
+   "name": "压轴铅衣",
+   "map": "auction",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "defense": 0.85,
+    "mitigation": 0.12,
+    "agi": -16
+   }
+  },
+  "field_hammer": {
+   "name": "一锤定音签",
+   "map": "auction",
+   "mode": "burst",
+   "weight": 1,
+   "hits": 1,
+   "mult": 3.2,
+   "sure": true,
+   "cost_hp": 0.32
+  },
+  "field_tide_valve": {
+   "name": "泄压肩阀",
+   "map": "tide",
+   "mode": "wear",
+   "weight": 4,
+   "mods": {
+    "mitigation": 0.17,
+    "atk": -0.08
+   }
+  },
+  "field_tide_impeller": {
+   "name": "反转叶轮挂架",
+   "map": "tide",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "atk": 0.2,
+    "agi": 7,
+    "defense": -0.13
+   }
+  },
+  "field_tide_filter": {
+   "name": "渗析滤芯",
+   "map": "tide",
+   "mode": "timed",
+   "weight": 6,
+   "floors": 3,
+   "mods": {
+    "regen": 0.07,
+    "defense": 0.18
+   }
+  },
+  "field_tide_cutter": {
+   "name": "空化切环",
+   "map": "tide",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 2,
+   "mods": {
+    "pierce": 0.25,
+    "boss": 0.22
+   }
+  },
+  "field_tide_baffle": {
+   "name": "双腔隔浪板",
+   "map": "tide",
+   "mode": "guard",
+   "weight": 5,
+   "hits": 2,
+   "reduction": 0.52
+  },
+  "field_tide_spike": {
+   "name": "水锤冲针",
+   "map": "tide",
+   "mode": "burst",
+   "weight": 4,
+   "hits": 2,
+   "mult": 1.62
+  },
+  "field_tide_capsule": {
+   "name": "高压氧囊",
+   "map": "tide",
+   "mode": "instant",
+   "weight": 7,
+   "heal": 0.42,
+   "shield": 12
+  },
+  "field_tide_float": {
+   "name": "导航浮标扣",
+   "map": "tide",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "flee": 0.14,
+    "dodge": 0.09
+   }
+  },
+  "field_tide_rhythm": {
+   "name": "双脉潮汐仪",
+   "map": "tide",
+   "mode": "timed",
+   "weight": 3,
+   "floors": 2,
+   "mods": {
+    "combo": 0.35,
+    "leech": 0.12
+   }
+  },
+  "field_tide_ballast": {
+   "name": "压舱盾匣",
+   "map": "tide",
+   "mode": "instant",
+   "weight": 5,
+   "shield": 75,
+   "cost_hp": 0.09
+  },
+  "field_zenith_lens": {
+   "name": "掩星瞄准镜",
+   "map": "zenith",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "boss": 0.28,
+    "crit": 0.08,
+    "defense": -0.15
+   }
+  },
+  "field_zenith_ring": {
+   "name": "姿态环带",
+   "map": "zenith",
+   "mode": "wear",
+   "weight": 4,
+   "mods": {
+    "dodge": 0.11,
+    "atk": 0.13
+   }
+  },
+  "field_zenith_vane": {
+   "name": "径向校准翼",
+   "map": "zenith",
+   "mode": "timed",
+   "weight": 5,
+   "floors": 3,
+   "mods": {
+    "agi": 24,
+    "first": 0.45
+   }
+  },
+  "field_zenith_prism": {
+   "name": "衍射棱片",
+   "map": "zenith",
+   "mode": "timed",
+   "weight": 4,
+   "floors": 2,
+   "mods": {
+    "crit": 0.21,
+    "pierce": 0.24
+   }
+  },
+  "field_zenith_guard": {
+   "name": "三层隔热毯",
+   "map": "zenith",
+   "mode": "guard",
+   "weight": 5,
+   "hits": 3,
+   "reduction": 0.41
+  },
+  "field_zenith_mass": {
+   "name": "轨道质量块",
+   "map": "zenith",
+   "mode": "burst",
+   "weight": 3,
+   "hits": 1,
+   "mult": 2.6,
+   "sure": true
+  },
+  "field_zenith_oxygen": {
+   "name": "冷凝生命液",
+   "map": "zenith",
+   "mode": "instant",
+   "weight": 7,
+   "heal": 0.45,
+   "shield": 22
+  },
+  "field_zenith_cradle": {
+   "name": "零重力吊床",
+   "map": "zenith",
+   "mode": "wear",
+   "weight": 3,
+   "mods": {
+    "regen": 0.055,
+    "mitigation": 0.12,
+    "agi": -5
+   }
+  },
+  "field_zenith_chart": {
+   "name": "脉冲星图",
+   "map": "zenith",
+   "mode": "timed",
+   "weight": 3,
+   "floors": 3,
+   "mods": {
+    "boss": 0.26,
+    "combo": 0.29
+   }
+  },
+  "field_zenith_foil": {
+   "name": "日面防护膜",
+   "map": "zenith",
+   "mode": "instant",
+   "weight": 5,
+   "shield": 86,
+   "cost_hp": 0.15
+  }
+ }
+}
