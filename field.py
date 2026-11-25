@@ -37,6 +37,15 @@ def active_mods(run: dict) -> dict[str, float]:
     return totals
 
 
+def worn_mods(run: dict) -> dict[str, float]:
+    """Modifier totals of worn field gear only (they last the whole run)."""
+    totals: dict[str, float] = {}
+    for entry in run.get("field_slots") or []:
+        for key, value in ((SPECS.get((entry or {}).get("id", "")) or {}).get("mods") or {}).items():
+            totals[key] = totals.get(key, 0.0) + value
+    return totals
+
+
 def live_build(run: dict, build: Build) -> Build:
     """Add the field effects that the state does not expose as numbers."""
     mods = active_mods(run)

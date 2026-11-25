@@ -202,3 +202,10 @@ def test_regular_kernel_separates_kills_from_draws():
     weak = {"hp": 5, "atk": 1, "def": 0, "agi": 0}
     kill, draw = regular_kernel(BUILD, weak, grid, 64, rng)
     assert draw.sum() == 0 and np.allclose(kill[1:].sum(axis=1), 1)
+
+
+def test_tables_ignore_ice_tea_agility(policy):
+    s = state(hp=666, controls=("rush", "down", "extract"))
+    s["run"]["stats"] = {**s["run"]["effective_stats"]}
+    s["run"]["effective_stats"] = {**s["run"]["stats"], "agi": BUILD.agi + 15}   # tea active
+    assert policy._table_build(s).agi == BUILD.agi

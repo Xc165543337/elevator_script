@@ -40,6 +40,7 @@ class MarkovConfig:
     heal_margin: float = 0.002      # a heal / flee must beat the alternative by this many bosses
     prep_margin: float = 0.01       # a field buff / grenade (no budget price) must gain this many bosses
     prep_pairs: int = 3             # best single preparations combined pairwise (buff + buff synergies)
+    prep_min_death: float = 0.001   # search field preparations only against regular fights at least this deadly
     extract_below: float = 0.0      # extract once expected further bosses drop below this (0 = never)
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
@@ -167,8 +168,19 @@ class MarkovPolicy(BossFarmPolicy):
         run = state["run"]
         if run["floor"] < self.mcfg.from_floor:
             return None
-        tables = self.planner.tables(self._calibrated(self.lasting_build(state)), run.get("map") or "mall")
+        tables = self.planner.tables(self._calibrated(self._table_build(state)), run.get("map") or "mall")
         return tables if tables.in_range(run["floor"]) else None
+
+    def _table_build(self, state: dict) -> Build:
+        """Build the tables are solved for: lasting_build without short boosts it cannot see as buffs,
+        i.e. agility capped at panel + worn gear (ice tea gives +15 for two floors only)."""
+        build = self.lasting_build(state)
+        run = state["run"]
+        base = (run.get("stats") or {}).get("agi")
+        if base is None:
+            return build
+        lasting = max(0.0, base + field_items.worn_mods(run).get("agi", 0.0))
+        return replace(build, agi=min(build.agi, lasting))
 
     def _heal_options(self, run: dict, in_combat: bool) -> list[HealOption]:
         floor, out, seen = run["floor"], [], set()
@@ -302,7 +314,9 @@ class MarkovPolicy(BossFarmPolicy):
             flee_q = float(np.interp(e, grid, flee_curve))
             curve = np.maximum(fight_curve, flee_curve)
         q_base = with_heals(curve)
-        best_prep, q_prep = self._best_preparation(state, tables, li, build, enemy, with_heals)
+        best_prep, q_prep = None, -np.inf
+        if boss or death >= self.mcfg.prep_min_death:   # a safe regular fight cannot gain from a buff
+            best_prep, q_prep = self._best_preparation(state, tables, li, build, enemy, with_heals)
 
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, heals)
         if best_prep is not None and q_prep > max(q_base, q_heal) + self.mcfg.prep_margin:
