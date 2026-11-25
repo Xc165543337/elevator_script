@@ -14,7 +14,8 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from model import BOSS_WINDOW, LIVE_RULES, Build, ServerRules, enemy, fight, fight_segment
+import heirlooms
+from model import BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, enemy, fight, fight_segment
 
 BERSERK_CAP = 0.75
 
@@ -81,7 +82,7 @@ class Calibration:
         """Update factors from one battle log, given the Build that was used to predict it."""
         hits = parse_battle_log(log)
         boss_mult = 1 + min(1.2, build.boss_bonus) if enemy.get("boss") else 1.0
-        p_pred = raw_hit(build.eff_atk, enemy["def"] * (1 - min(0.75, build.pierce))) * build.dealt_mult * boss_mult
+        p_pred = raw_hit(build.eff_atk, enemy["def"] * (1 - min(build.pierce_cap, build.pierce))) * build.dealt_mult * boss_mult
         e_pred = raw_hit(enemy["atk"], build.eff_def) * build.taken_mult * (1 - build.reduction)
         for rnd, dmg in hits["player"]:
             if rnd > 1 and p_pred > 0:  # round 1 carries one-off bonuses
@@ -89,6 +90,8 @@ class Calibration:
                 self._update("k_player", "n_player", dmg / (p_pred * berserk))
         for rnd, dmg in hits["enemy"]:
             heavy = 1.26 if enemy.get("boss") and rnd % BOSS_WINDOW == 0 else 1.0
+            if build.beat and rnd % BEAT_EVERY == 0:
+                heavy *= BEAT_TAKEN
             if e_pred > 0:
                 self._update("k_enemy", "n_enemy", dmg / (e_pred * heavy))
 
@@ -108,6 +111,7 @@ def run_build(state: dict, affix_build: Build) -> Build:
     es = run["effective_stats"]
     mult = float(run.get("damage_multiplier") or 1)
     reduction = float(sec["mitigation"]) if sec.get("mitigation") is not None else affix_build.reduction
+    affix_build = replace(affix_build, **heirlooms.build_effects(state.get("heirlooms")))
     return replace(affix_build, hp=run["max_hp"], atk=es["atk"], defense=es["def"], agi=es["agi"], luk=es["luk"],
                    reduction=reduction,
                    pierce=sec.get("pierce") or affix_build.pierce, leech=sec.get("leech") or affix_build.leech,
@@ -117,12 +121,20 @@ def run_build(state: dict, affix_build: Build) -> Build:
                    last_stand=False)  # once per run and its state is not exposed: assume spent
 
 
+def battle_enemy(state: dict, enemy: dict) -> dict:
+    """The enemy as the damage formula sees it: defence after the blessings' deep-floor armour shred of
+    the current floor (`player.secondary.condition.depth_shred`, servers since 2026-11-25)."""
+    condition = (state["player"].get("secondary") or {}).get("condition") or {}
+    shred = float(condition.get("depth_shred") or 0.0)
+    return {**enemy, "def": enemy["def"] * (1 - shred)} if shred > 0 else enemy
+
+
 def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
              rng: np.random.Generator | None = None, rules: ServerRules = LIVE_RULES) -> FightEstimate:
     """Outcome of the fight segment that starts now: up to the next pause (boss window, elite pause)
     or the round cap. `win` is P(the enemy dies within it)."""
     run = state["run"]
-    enemy = run["event"]["enemy"]
+    enemy = battle_enemy(state, run["event"]["enemy"])
     boss = bool(enemy.get("boss"))
     start, rounds = fight_segment(enemy, rules)
     kp, ke = cal.conservative()

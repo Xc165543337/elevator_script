@@ -20,6 +20,7 @@ _GROWTH = {  # (a, b, c) per stat: value = a + b*x + c*z
     "boss": {"hp": (198, 2.6, 7.1), "atk": (30.5, 0.21, 0.58), "def": (4.4, 0.095, 0.33), "agi": (9, 0.12, 0.8)},
 }
 BOSS_WINDOW, BOSS_HEAVY = 4, 1.26
+BEAT_EVERY, BEAT_TAKEN = 4, 0.65   # blessing B06 4 pieces (抢拍): every 4th round of a fight against one enemy
 REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rounds (no kill, no kill-heal)
 
 
@@ -155,6 +156,8 @@ class Build:
     burst_hits: int = 0         # field burst (热敏收银纸 ...): the next N main attacks are charged
     burst_mult: float = 1.0
     burst_sure: bool = False    # charged attacks cannot be dodged
+    pierce_cap: float = 0.75    # B06 缺刻值夜表 2 pieces: +12 pp above the cap (87%)
+    beat: bool = False          # B06 4 pieces (抢拍): rounds 4, 8, ... the player acts first and takes x0.65
     label: str = ""
 
     @property
@@ -206,7 +209,7 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
     max_hp = build.hp
     edodge = min(0.45, 0.03 + 0.004 * foe["agi"])
     pdodge = build.dodge
-    p_raw = build.eff_atk * 100 / (100 + 2.5 * foe["def"] * (1 - min(0.75, build.pierce)))
+    p_raw = build.eff_atk * 100 / (100 + 2.5 * foe["def"] * (1 - min(build.pierce_cap, build.pierce)))
     e_raw = foe["atk"] * 100 / (100 + 2.5 * build.eff_def) * (1 - build.reduction) * build.taken_mult
     boss_mult = 1 + min(1.2, build.boss_bonus) if boss else 1.0
     player_first = build.agi >= foe["agi"]
@@ -217,7 +220,8 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
     for i in range(rounds):
         if not active.any():
             break
-        t = start_round + i
+        t = start_round + i                          # rounds count per enemy, across pauses
+        beat_round = build.beat and t % BEAT_EVERY == 0
         used[active] += 1
 
         def strike(mult, atk_mult, crit_p, hit):
@@ -251,6 +255,8 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
             dmg = e_raw * rng.uniform(0.9, 1.1, n)
             if boss and t % BOSS_WINDOW == 0:
                 dmg = dmg * BOSS_HEAVY
+            if beat_round:
+                dmg = dmg * BEAT_TAKEN
             guarded = hit & (guard_left > 0)
             dmg = np.where(guarded, dmg * (1 - build.guard_reduction), dmg)
             guard_left[guarded] -= 1
@@ -264,7 +270,7 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
             hp = np.where(saved, 1.0, hp)
             ls = ls & ~saved
 
-        for who in ((player_attack, enemy_attack) if player_first else (enemy_attack, player_attack)):
+        for who in ((player_attack, enemy_attack) if player_first or beat_round else (enemy_attack, player_attack)):
             who(active & (hp > 0) & (ehp > 0))
         active = (hp > 0) & (ehp > 0)
     killed = (ehp <= 0) & (hp > 0)

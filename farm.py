@@ -23,7 +23,7 @@ import requests
 
 from client import ElevatorClient, GameError
 import heirlooms
-from combat import Calibration
+from combat import Calibration, battle_enemy
 from markov_policy import MarkovConfig, MarkovPolicy
 from model import LEGACY_RULES, LIVE_RULES, floor_mix, parse_floor_odds
 from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
@@ -329,6 +329,7 @@ class Farmer:
             floor = t["floor"] = run["floor"]
             decision = self.policy.decide(state)
             enemy = (run.get("event") or {}).get("enemy") if decision.command == "fight" else None
+            enemy = battle_enemy(state, enemy) if enemy else None
             fighter = self.policy.current_build(state) if enemy else None
             try:
                 data = self.call(decision.command, decision.params)
@@ -357,6 +358,7 @@ class Farmer:
             self.trace.write(json.dumps({"t": time.time(), "floor": floor, "hp": run["hp"],
                                          "stats": run.get("effective_stats"), "dmg_mult": run.get("damage_multiplier"),
                                          "slots": run.get("field_slots"), "enemy": (run.get("event") or {}).get("enemy"),
+                                         "condition": (state["player"].get("secondary") or {}).get("condition"),
                                          "decision": decision.command, "params": decision.params,
                                          "reason": decision.reason, "result": result}, ensure_ascii=False) + "\n")
             if self.args.verbose or decision.command not in ("rush", "fight", "field_pick") or (enemy and enemy.get("boss")):

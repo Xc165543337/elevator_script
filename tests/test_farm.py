@@ -94,3 +94,31 @@ def test_rush_settings_stop_before_elites(tmp_path):
     older = RecordingClient({"player": {"rush_floors": 5, "rush_skip_valuable": True}})
     Farmer(args, client=older).ensure_rush_settings()
     assert older.sent == [("rush_settings", {"floors": 10})]
+
+
+def test_full_b06_set_sets_pierce_cap_and_beat():
+    worn = {"slots": ["B06-1", "B06-2", "B06-3", "B06-4"], "pieces": {}}
+    assert heirlooms.build_effects(worn) == {"pierce_cap": 0.87, "beat": True}
+    assert heirlooms.build_effects({"slots": ["B06-1", "B06-2", None, "B08-1"]}) == {"pierce_cap": 0.87}
+    assert heirlooms.build_effects(None) == {}
+
+
+def test_beat_rounds_cut_damage_taken():
+    import numpy as np
+    from dataclasses import replace
+    from model import Build, fight
+    base = Build(hp=1000, atk=1, defense=0, agi=0, luk=0)
+    foe = {"hp": 10**6, "atk": 100, "def": 0, "agi": 0}
+    taken = {}
+    for beat in (False, True):
+        hp, *_ = fight(replace(base, beat=beat), np.full(4000, 1000.0), np.zeros(4000), foe, boss=False,
+                       rounds=4, rng=np.random.default_rng(0))
+        taken[beat] = 1000 - hp.mean()
+    assert taken[True] / taken[False] == pytest.approx((3 + 0.65) / 4, rel=0.03)
+
+
+def test_battle_enemy_applies_the_depth_shred():
+    from combat import battle_enemy
+    state = {"player": {"secondary": {"condition": {"depth_shred": 0.25}}}}
+    assert battle_enemy(state, {"def": 80, "hp": 5})["def"] == 60
+    assert battle_enemy({"player": {}}, {"def": 80})["def"] == 80

@@ -24,7 +24,7 @@ from typing import Callable
 import numpy as np
 
 import field as field_items
-from combat import Calibration
+from combat import Calibration, battle_enemy
 from field import FieldPrep
 from mdp import (BOSS_WINDOWS, FIELD_HEALS, SHOP_HEALS, HealItem, MdpConfig, ValueTables, _Closure,
                  elite_pause_kernel, elite_pause_value, flee_chance, flee_hit, interp_matrix, load_tables,
@@ -321,7 +321,7 @@ class MarkovPolicy(BossFarmPolicy):
         Heals and smoke bombs are priced by their run budgets; field buffs are free but must gain
         `prep_margin`. Every option's value already includes the best heals that could follow it."""
         run = state["run"]
-        enemy = run["event"]["enemy"]
+        enemy = battle_enemy(state, run["event"]["enemy"])
         boss = bool(enemy.get("boss"))
         g, e, max_hp, grid = run["floor"], effective_hp(run), float(run["max_hp"]), tables.grid
         kind = "boss" if boss else "elite" if enemy.get("elite") else "normal"

@@ -131,7 +131,7 @@ def apply(run: dict, build: Build, prep: FieldPrep, mods: dict | None = None) ->
         defense=max(0.0, build.defense + base["def"] * d("defense", 0.0)),
         agi=max(0.0, build.agi + d("agi", 0.0)),
         leech=min(0.42, build.leech + d("leech", 0.0)), combo=min(0.70, build.combo + d("combo", 0.0)),
-        pierce=min(0.75, build.pierce + d("pierce", 0.0)), boss_bonus=min(1.2, build.boss_bonus + d("boss", 0.0)),
+        pierce=min(build.pierce_cap, build.pierce + d("pierce", 0.0)), boss_bonus=min(1.2, build.boss_bonus + d("boss", 0.0)),
         reduction=build.reduction + d("mitigation", 0.0), crit_bonus=build.crit_bonus + d("crit", 0.0),
         dodge_bonus=build.dodge_bonus + d("dodge", 0.0), heavy=build.heavy + d("first", 0.0),
         thorns=min(0.7, build.thorns + d("thorns", 0.0)))

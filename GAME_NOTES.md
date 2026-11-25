@@ -65,6 +65,10 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
   | B06 缺刻值夜表 | pierce +12 pp (max 87%) | rounds 4, 8, 12, ...: act first and take ×0.65 damage (boss heavy hits too) |
   | B07 逆风放线人 | follow-up +12 pp (max 82%) | first follow-up hit per fight heals 40% of its damage (cap 12% max HP) |
   | B08 雪线留声筒 | leech +8 pp (max 50%; per-round leech heal still capped at 10% max HP) | once per run, a lethal monster hit leaves 20% max HP (before the doll) |
+- Wearing blessings also brings a deep-floor armour shred ("本层祝福深层破甲", up to 60%, growing with depth):
+  `player.secondary.condition.depth_shred` is the current floor's value (the formula is not known yet).
+  The agent applies it to enemy defence in live fights; the solved tables do not (conservative).
+  Modelled set effects: B06 2 pieces (pierce cap 87%) and 4 pieces (抢拍, rounds 4/8/... first, x0.65).
 - The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
   `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.

@@ -74,3 +74,23 @@ def collection_lines(heirlooms: dict | None) -> list[str]:
         lines.append(f"{i}. {suit.get('name', key)}: {sum(1 for p in parts if have[p])}/{len(parts)} collected, "
                      f"{sum(1 for p in parts if p in worn)} worn{' (pursued)' if key in focus else ''}")
     return lines
+
+
+def worn_sets(heirlooms: dict | None) -> Counter:
+    """Pieces worn per set id."""
+    pieces = (heirlooms or {}).get("pieces") or {}
+    return Counter(pieces.get(key, {}).get("set") or key.split("-")[0]
+                   for key in (heirlooms or {}).get("slots") or [] if key)
+
+
+def build_effects(heirlooms: dict | None) -> dict:
+    """Build fields set by worn set bonuses that the secondary stats do not carry. The stat bonuses
+    themselves (pierce, crit, leech, ...) already arrive through `player.secondary`; set effects not
+    listed here are not modelled yet."""
+    worn = worn_sets(heirlooms)
+    effects: dict = {}
+    if worn["B06"] >= 2:
+        effects["pierce_cap"] = 0.87      # 缺刻值夜表: pierce +12 pp above the 75% cap
+    if worn["B06"] >= 4:
+        effects["beat"] = True            # 抢拍: rounds 4, 8, ... act first, take x0.65
+    return effects
