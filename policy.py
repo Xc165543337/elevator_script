@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 
 from combat import Calibration, FightEstimate, chain_risk, estimate, run_build
 from gear import GearModel
-from model import LIVE_RULES, Build, FightRules
+from model import LIVE_RULES, Build, ServerRules
 
 # Heal amount (fraction of max HP) of shop supplies; field items are parsed from text.
 SUPPLY_HEAL = {
@@ -51,7 +51,7 @@ class PolicyConfig:
     swap_margin: float = 1.2            # swap loot into a full safe box only if worth >= margin x cheapest secured
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
-    rules: FightRules = LIVE_RULES      # round limits of the server being played (offline engine: LEGACY_RULES)
+    rules: ServerRules = LIVE_RULES     # rules of the server being played (offline engine: LEGACY_RULES)
 
 
 @dataclass

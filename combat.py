@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from model import BOSS_WINDOW, LIVE_RULES, Build, FightRules, enemy, fight, fight_segment
+from model import BOSS_WINDOW, LIVE_RULES, Build, ServerRules, enemy, fight, fight_segment
 
 BERSERK_CAP = 0.75
 
@@ -118,7 +118,7 @@ def run_build(state: dict, affix_build: Build) -> Build:
 
 
 def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
-             rng: np.random.Generator | None = None, rules: FightRules = LIVE_RULES) -> FightEstimate:
+             rng: np.random.Generator | None = None, rules: ServerRules = LIVE_RULES) -> FightEstimate:
     """Outcome of the fight segment that starts now: up to the next pause (boss window, elite pause)
     or the round cap. `win` is P(the enemy dies within it)."""
     run = state["run"]

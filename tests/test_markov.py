@@ -247,7 +247,8 @@ def test_never_smokes_a_boss(policy):
 
 
 def test_price_choice_counts_smokes(tables):
-    values = tables.at(tables.encounter["elite"], 165, 0.5)
+    # values fall as smokes get dearer (until no smoke is worth using), as in solved tables
+    values = 10.0 - np.minimum(tables.smoke_prices, 1.0)
     none = tables.price_index(values, 0.0, 0)
     some = tables.price_index(values, 0.0, 5)
     assert tables.smoke_prices[none] >= 1.0                          # no smokes: a price that never uses one

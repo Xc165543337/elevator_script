@@ -41,6 +41,10 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
     the fight resumes from there.
   - Bosses: 4 rounds per `fight`. HP and the cumulative round count carry over; between windows you can
     use potions, field items and change temp gear. A boss never retreats.
+- **Encounter odds** are shown for the next floor in `run.next_floor` (e.g. `📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)`).
+  Since 2026-11-25 the deep-floor mix is chest 34%, normal 41%, elite 12%, event 13% (was 34 / 33 / 20 / 13:
+  elites moved to normal monsters). The F1 row and the 12-floor blend are assumed unchanged.
+  `farm.py` compares the shown odds with `model.floor_mix` once per run and warns on a mismatch.
 - **Blessings (闻岑闪耀祝福, live since 2026-11-25).** A real run needs two pursued sets (`start` param
   `focus: [set id, set id]`, chat `追寻 1 8`; a running run that lacks them shows `heirlooms.needs_focus` and
   takes the `pursue` command). Each formal boss kill rolls once for a shining drop: 3% at F8, rising with

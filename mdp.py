@@ -33,7 +33,7 @@ from typing import Callable
 
 import numpy as np
 
-from model import (BOSS_WINDOW, LIVE_RULES, REGULAR_ROUND_CAP, Build, FightRules, enemy, fight, floor_mix,
+from model import (BOSS_WINDOW, LIVE_RULES, REGULAR_ROUND_CAP, Build, ServerRules, enemy, fight, floor_mix,
                    is_boss_floor)
 
 E_MAX = 1.25                 # effective HP cap: full HP plus the 25% shield of a barrier serum
@@ -41,7 +41,7 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 5            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 6            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -148,7 +148,7 @@ class MdpConfig:
     # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left)
     smoke_prices: tuple = (0.0, 0.1, 0.3, 1.0, 1000.0)
     pause_samples: int = 96        # Monte Carlo fights per (hp, elite hp) point of the elite-pause kernel
-    rules: FightRules = LIVE_RULES
+    rules: ServerRules = LIVE_RULES
     seed: int = 0
 
 
@@ -266,7 +266,7 @@ def boss_kernel(build: Build, foe: dict, window: int, grid: np.ndarray, boss_gri
 
 
 def elite_pause_kernel(build: Build, foe: dict, grid: np.ndarray, enemy_grid: np.ndarray, samples: int,
-                       rng: np.random.Generator, rules: FightRules) -> np.ndarray:
+                       rng: np.random.Generator, rules: ServerRules) -> np.ndarray:
     """lands[s, j]: from the elite pause at flattened state s, P(the player survives the remaining
     rounds and ends at hp point j). The elite dying and the elite retreating at the cap lead to the same
     place (this floor's ready state), so only the player's HP matters."""
@@ -389,7 +389,7 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         """Value of entering floor h during a rush; `after` = continuation once the floor is resolved."""
         if is_boss_floor(h):
             return income(h) + boss_start[h]
-        mix = floor_mix(h)
+        mix = floor_mix(h, rules)
         killed, drawn = kernel("normal", h)
         fought = after @ killed.T + ready[h] @ drawn.T          # a draw halts the rush on that floor
         normal = np.where(low, encounter["normal"][h], fought) if stop_low else fought
@@ -430,7 +430,7 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         if is_boss_floor(g):
             arrive[g] = income(g) + boss_start[g]
         else:
-            mix = floor_mix(g)
+            mix = floor_mix(g, rules)
             arrive[g] = income(g) + (mix["normal"] * encounter["normal"][g] + mix["elite"] * encounter["elite"][g]
                                      + (mix["choice"] + mix["loot"]) * ready[g])
         # 6. mid-rush values entering g+1 (needs ready[g] for the pre-descent HP check)

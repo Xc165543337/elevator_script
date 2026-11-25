@@ -58,7 +58,7 @@
   elite fight lost at F918). Single runs are noisy.
 
 ## Server update of 2026-11-25 (adapted on this branch)
-- Elites: 16 rounds with a pause after round 8 (heal / change gear). `model.FightRules`, `fight_segment`;
+- Elites: 16 rounds with a pause after round 8 (heal / change gear). `model.ServerRules`, `fight_segment`;
   the MDP values the pause (`mdp.elite_pause_kernel`), the live policy evaluates it per elite, the
   threshold estimate covers the segment ahead. `--rules legacy` keeps the old rule for `offline.py`.
 - Blessings (闻岑闪耀祝福): real runs need two pursued sets (`--focus`, default = last choice, currently
@@ -66,6 +66,9 @@
   (one piece each of B06 and B08 owned), so they are not modelled. Once 2+ pieces of a set are worn, the
   model needs: B04 dodge and B01 hit (the model computes dodge / hit from agility itself), the 4-piece
   effects (B06 抢拍 is large against boss heavy hits).
+- Encounter odds: deep floors are now normal 41% / elite 12% / event 13% / chest 34% (was 33 / 20 / 13 / 34),
+  in `ServerRules.deep_mix`. `farm.py` checks `run.next_floor` once per run and
+  warns if the server's odds differ from the model again.
 - `player.secondary.mitigation` (打击减伤) is read into the build (a server total, field items included).
 - Not verified on a live elite yet: the field names of the pause state (`rounds_fought` = 8, controls).
   Watch the first live elite in `--verbose` output.

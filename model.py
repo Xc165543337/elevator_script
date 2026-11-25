@@ -7,6 +7,7 @@ verified against live data (e.g. the F1030 Mall boss: 4,067 HP predicted and obs
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from functools import lru_cache
 
@@ -23,22 +24,24 @@ REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rou
 
 
 @dataclass(frozen=True)
-class FightRules:
-    """Round limits that differ between server versions.
+class ServerRules:
+    """Rules that differ between server versions.
 
     Since 2026-11-25 the live server gives elites 16 rounds with a pause after round 8: HP and the
     elite's state are kept, and the player may heal or change gear before resuming. A draw at the cap
-    still makes the elite retreat without loot. The public bot repository (used by offline.py) predates
-    this and fights elites like normal monsters (15 rounds, no pause)."""
+    still makes the elite retreat without loot. The same update moved deep-floor encounters from elites to
+    normal monsters (the client shows 箱34% 怪41% 精12% 奇13% from F247 on). The public bot repository
+    (used by offline.py) predates both."""
     elite_round_cap: int = 16
     elite_break: int = 8            # round after which an elite fight pauses (0 = no pause)
+    deep_mix: tuple[int, int, int, int] = (41, 12, 13, 34)   # deep-floor weights: normal, elite, event, loot
 
 
-LIVE_RULES = FightRules()
-LEGACY_RULES = FightRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0)
+LIVE_RULES = ServerRules()
+LEGACY_RULES = ServerRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0, deep_mix=(33, 20, 13, 34))
 
 
-def fight_segment(enemy: dict, rules: FightRules = LIVE_RULES) -> tuple[int, int]:
+def fight_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> tuple[int, int]:
     """(first round, number of rounds) of the fight segment that starts now: up to the end of the
     boss window, the elite pause or the round cap, whichever comes first."""
     fought = int(enemy.get("rounds_fought") or 0)
@@ -51,25 +54,43 @@ def fight_segment(enemy: dict, rules: FightRules = LIVE_RULES) -> tuple[int, int
     return fought + 1, max(1, end - fought)
 
 
-def pauses_after_segment(enemy: dict, rules: FightRules = LIVE_RULES) -> bool:
+def pauses_after_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> bool:
     """Whether the segment starting now ends at the elite pause (the fight then resumes)."""
     fought = int(enemy.get("rounds_fought") or 0)
     return bool(enemy.get("elite") and not enemy.get("boss") and 0 < rules.elite_break and fought < rules.elite_break)
 # Encounter weights of a non-boss floor (server `event_weights`, all maps). The server blends the
-# F1 row into the deep row with a 12-floor half-life; both rows sum to 100. Verified on 7.8k real
-# Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%, chest/relic 33.8%).
-_FLOOR_WEIGHTS_F1 = {"normal": 34, "elite": 5, "choice": 12, "loot": 49}   # loot includes relics
-_FLOOR_WEIGHTS_DEEP = {"normal": 33, "elite": 20, "choice": 13, "loot": 34}
+# F1 row into the deep row (ServerRules.deep_mix) with a 12-floor half-life; both rows sum to 100.
+# The legacy rows were verified on 7.8k real Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%,
+# chest/relic 33.8%). The F1 row of the current server is assumed unchanged (it only matters below ~F60).
+MIX_KINDS = ("normal", "elite", "choice", "loot")    # loot includes relics
+_FLOOR_WEIGHTS_F1 = (34, 5, 12, 49)
 _FLOOR_WEIGHTS_HALF_LIFE = 12
 
 
 @lru_cache(maxsize=None)
-def floor_mix(floor: int) -> dict[str, float]:
+def floor_mix(floor: int, rules: ServerRules = LIVE_RULES) -> dict[str, float]:
     """P(encounter kind) on a non-boss floor, ignoring the 潜行 (sneak) affix, which the build lacks."""
     u = 1 - 2 ** (-max(0, floor - 1) / _FLOOR_WEIGHTS_HALF_LIFE)
-    weights = {k: v + (_FLOOR_WEIGHTS_DEEP[k] - v) * u for k, v in _FLOOR_WEIGHTS_F1.items()}
-    total = sum(weights.values())
-    return {k: v / total for k, v in weights.items()}
+    weights = [first + (deep - first) * u for first, deep in zip(_FLOOR_WEIGHTS_F1, rules.deep_mix)]
+    total = sum(weights)
+    return {k: w / total for k, w in zip(MIX_KINDS, weights)}
+
+
+_ODDS_PART = re.compile(r"(箱|怪|精|奇|遗)(\d+(?:\.\d+)?)%")
+_ODDS_KIND = {"箱": "loot", "遗": "loot", "怪": "normal", "精": "elite", "奇": "choice"}
+
+
+def parse_floor_odds(text: str | None) -> dict[str, float] | None:
+    """Encounter odds from the client's next-floor line (`run.next_floor`, e.g.
+    "📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)"), as fractions keyed like floor_mix (a relic share
+    遗 counts as loot). None when the line shows no odds (boss floor, radar peek, vault)."""
+    parts = _ODDS_PART.findall((text or "").split("｜", 1)[0])
+    if not parts:
+        return None
+    odds = dict.fromkeys(MIX_KINDS, 0.0)
+    for label, value in parts:
+        odds[_ODDS_KIND[label]] += float(value) / 100
+    return odds
 
 
 def boss_floors(limit: int) -> list[int]:

@@ -274,10 +274,22 @@ def test_active_slow_heal_blocks_every_copy():
 
 
 def test_floor_mix_follows_server_weight_curve():
-    from model import floor_mix
+    from model import LEGACY_RULES, floor_mix
 
-    first, deep = floor_mix(1), floor_mix(1000)
+    first, deep = floor_mix(1, LEGACY_RULES), floor_mix(1000, LEGACY_RULES)
     assert abs(sum(first.values()) - 1) < 1e-9 and abs(sum(deep.values()) - 1) < 1e-9
     assert abs(first["elite"] - 0.05) < 1e-9 and abs(deep["elite"] - 0.20) < 1e-6
-    assert abs(floor_mix(13)["elite"] - 0.125) < 1e-9  # one half-life: halfway between 5% and 20%
+    assert abs(floor_mix(13, LEGACY_RULES)["elite"] - 0.125) < 1e-9  # one half-life: halfway between 5% and 20%
     assert abs(deep["normal"] - 0.33) < 1e-6
+
+
+def test_live_floor_mix_matches_the_odds_the_client_shows():
+    from model import floor_mix, parse_floor_odds
+
+    shown = parse_floor_odds("📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)")
+    assert shown == {"normal": 0.41, "elite": 0.12, "choice": 0.13, "loot": 0.34}
+    assert all(abs(floor_mix(247)[k] - p) < 1e-6 for k, p in shown.items())
+    assert parse_floor_odds("📊 F250 必遇首领。可以先整备局内道具，击败后回满生命。") is None
+    assert parse_floor_odds("📊 F251：📡 100%「普怪」") is None and parse_floor_odds(None) is None
+    with_relics = parse_floor_odds("📊 F300：箱30% 怪33% 精20% 奇13% 遗4%｜金红50.0%(红9.0%)")
+    assert abs(with_relics["loot"] - 0.34) < 1e-9

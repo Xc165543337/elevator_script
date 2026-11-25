@@ -100,7 +100,9 @@ The default loadout carries every shop heal and smoke bombs at the live carry li
 adrenaline shots. Real runs pursue two blessing sets (追寻): `--focus 6,8` picks them by number (or id,
 `B06,B08`); without it the pair chosen last time is reused, and the run is not started if there is none.
 New shining pieces are logged and, in a new `runs.csv`, written to its `shining` column (an existing file keeps its columns). `--rules legacy` plays
-with the older engine's round limits (elites 15 rounds, no pause); it is only meant for `offline.py`.
+with the older engine's rules (elites 15 rounds without a pause, more elites on deep floors); it is only
+meant for `offline.py`. Once per run the encounter odds the client shows are compared with the model (a
+mismatch is logged as a warning).
 
 ## Markov policy (`--policy markov`)
 

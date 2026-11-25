@@ -25,7 +25,7 @@ from client import ElevatorClient, GameError
 import heirlooms
 from combat import Calibration
 from markov_policy import MarkovConfig, MarkovPolicy
-from model import LEGACY_RULES, LIVE_RULES
+from model import LEGACY_RULES, LIVE_RULES, floor_mix, parse_floor_odds
 from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +43,10 @@ def parse_loadout(text: str) -> dict[str, int]:
         key, _, qty = part.partition("=")
         out[key.strip()] = int(qty or 1)
     return out
+
+
+def format_mix(mix: dict[str, float]) -> str:
+    return " ".join(f"{kind} {p:.0%}" for kind, p in mix.items())
 
 
 SELL_KINDS = ("collection", "material")   # supplies (potions, in-game items), crates and gear are never sold
@@ -279,7 +283,23 @@ class Farmer:
 
     def reset_tally(self) -> None:
         self.tally = {"t0": time.time(), "steps": 0, "bosses": 0, "rainbows": [], "floor": 0,
-                      "outcome": "", "summary": "", "heirlooms": heirlooms.owned(self.client.state.get("heirlooms"))}
+                      "outcome": "", "summary": "", "heirlooms": heirlooms.owned(self.client.state.get("heirlooms")),
+                      "odds_checked": False}
+
+    def check_floor_odds(self, run: dict) -> None:
+        """Once per run, compare the encounter odds the client shows for the next floor with the model's
+        (they changed with the server update of 2026-11-25) and warn on a mismatch."""
+        floor = run["floor"] + 1
+        odds = parse_floor_odds(run.get("next_floor"))
+        if self.tally["odds_checked"] or odds is None or floor < 60:   # the blend from F1 has settled by F60
+            return
+        self.tally["odds_checked"] = True
+        expected = floor_mix(floor, self.policy.cfg.rules)
+        if max(abs(odds[k] - expected[k]) for k in odds) > 0.015:
+            self.log(f"WARNING: encounter odds at F{floor} are {format_mix(odds)} on the server but "
+                     f"{format_mix(expected)} in the model; update model.ServerRules.deep_mix")
+        else:
+            self.log(f"encounter odds at F{floor} match the model ({format_mix(odds)})")
 
     def play_run(self) -> dict:
         """Play until the run ends. Counters live in self.tally so they survive resumes."""
@@ -288,6 +308,7 @@ class Farmer:
             self.ensure_pursuit()
             state = self.client.state
             run = state["run"]
+            self.check_floor_odds(run)
             floor = t["floor"] = run["floor"]
             decision = self.policy.decide(state)
             enemy = (run.get("event") or {}).get("enemy") if decision.command == "fight" else None
@@ -441,8 +462,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="real runs: the two blessing sets to pursue (追寻), by number or id, e.g. 1,8; "
                          "default: the pair chosen last time")
     ap.add_argument("--rules", choices=("live", "legacy"), default="live",
-                    help="fight round limits: live = elites pause after round 8 of 16 (server since 2026-11-25); "
-                         "legacy = the older engine of the public bot repository (offline.py)")
+                    help="server rules: live = elites pause after round 8 of 16 and the current encounter odds "
+                         "(server since 2026-11-25); legacy = the older engine of the public bot repository (offline.py)")
     ap.add_argument("--loadout", default=DEFAULT_LOADOUT, help="supplies to carry, e.g. field_surgery=12,coffee=10")
     ap.add_argument("--no-restock", dest="restock", action="store_false", help="do not buy missing supplies")
     ap.add_argument("--buy-tickets", action="store_true", help="buy paid tickets (350 gold) when free ones run out")
