@@ -178,6 +178,7 @@ class Build:
     pierce_cap: float = 0.75    # B06 缺刻值夜表 2 pieces: +12 pp above the cap (87%)
     beat: bool = False          # B06 4 pieces (抢拍): rounds 4, 8, ... the player acts first and takes x0.65
     depth_shred_cap: float = 0.0  # worn blessings: enemy defence shred from F50 on, up to this (see depth_shred)
+    flee_bonus: float = 0.0     # rainbow 风隙羽标: flee chance +20 pp after the usual 90% cap (max 100%)
     label: str = ""
 
     @property

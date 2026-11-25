@@ -150,3 +150,16 @@ def test_connect_waits_out_a_restarting_server(tmp_path):
     farmer = Farmer(args, client=Flaky({}))
     farmer.connect(attempts=5, wait=0)
     assert Flaky.calls == 3
+
+
+def test_wind_feather_adds_flee_after_the_cap():
+    from dataclasses import replace
+    from combat import rainbow_flee_bonus
+    from mdp import flee_chance
+    from model import Build
+    b = Build(hp=700, atk=200, defense=100, agi=79, luk=24)
+    assert flee_chance(b, 2000) == pytest.approx(0.15)
+    assert flee_chance(replace(b, flee_bonus=0.2), 2000) == pytest.approx(0.35)
+    assert flee_chance(replace(b, agi=200, flee_bonus=0.2), 1) == 1.0
+    state = {"atlas": {"rainbow": [{"id": "prism_wind", "unlocked": True}, {"id": "prism_sun", "unlocked": False}]}}
+    assert rainbow_flee_bonus(state) == pytest.approx(0.2)

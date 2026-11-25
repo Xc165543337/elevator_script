@@ -103,6 +103,15 @@ class FightEstimate:
     hp_after: float  # mean player HP+shield at the end, over surviving samples
 
 
+RAINBOW_FLEE = {"prism_wind": 0.20}   # 风隙羽标: flee +20 pp after the usual cap; its other bonuses are in the stats
+
+
+def rainbow_flee_bonus(state: dict) -> float:
+    """Flee bonus of the unlocked rainbow items (their permanent skills apply from the first drop)."""
+    return sum(RAINBOW_FLEE.get(r.get("id"), 0.0) for r in (state.get("atlas") or {}).get("rainbow") or []
+               if r.get("unlocked"))
+
+
 def run_build(state: dict, affix_build: Build) -> Build:
     """Combat Build for the current moment of a run: live stats + permanent affixes.
     The server's secondary stats are totals (gear, blessings, active field items); `mitigation`
@@ -112,7 +121,8 @@ def run_build(state: dict, affix_build: Build) -> Build:
     mult = float(run.get("damage_multiplier") or 1)
     reduction = float(sec["mitigation"]) if sec.get("mitigation") is not None else affix_build.reduction
     affix_build = replace(affix_build, **heirlooms.build_effects(state.get("heirlooms")),
-                          depth_shred_cap=float((sec.get("condition") or {}).get("depth_cap") or 0.0))
+                          depth_shred_cap=float((sec.get("condition") or {}).get("depth_cap") or 0.0),
+                          flee_bonus=rainbow_flee_bonus(state))
     return replace(affix_build, hp=run["max_hp"], atk=es["atk"], defense=es["def"], agi=es["agi"], luk=es["luk"],
                    reduction=reduction,
                    pierce=sec.get("pierce") or affix_build.pierce, leech=sec.get("leech") or affix_build.leech,

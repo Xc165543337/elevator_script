@@ -293,8 +293,8 @@ def _split(x: np.ndarray, grid: np.ndarray) -> list[tuple[np.ndarray, np.ndarray
 
 
 def flee_chance(build: Build, floor: int) -> float:
-    """Server flee rate without perks or field modifiers."""
-    return min(0.90, max(0.15, 0.45 + (build.agi - 1.5 * floor) * 0.015))
+    """Server flee rate without gear or field modifiers, plus the rainbow 风隙羽标 bonus."""
+    return min(1.0, min(0.90, max(0.15, 0.45 + (build.agi - 1.5 * floor) * 0.015)) + build.flee_bonus)
 
 
 def flee_hit(build: Build, foe: dict) -> float:
