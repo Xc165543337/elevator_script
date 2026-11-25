@@ -86,7 +86,7 @@
   odds 41/12/13/34, rush settings can be changed during a run.
 
 ## Real runs with the full B06 set (2026-11-25 14:00-15:52)
-- Run 1 (Markov, full loadout, pursuit B08 + B03): 111 bosses by F2150 under the agent, F2110 at 106.
+- Run 1 (Markov, full loadout, pursuit B08 + B03): 107 bosses through F2130 under the agent; the user took over at F2150.
   The model expected ~39 more bosses at F1010 (vs ~4.6 before the set): 抢拍 and the deep-floor shred
   (fitted: 0.6 x d / (d + 85), d = floor - 50) make deep floors far easier. Shining: B08 4/4, B03 1/4.
 - At the F2150 boss the agent picked the wish (为了我所期待的), which would have wiped 23.5M of run loot.
