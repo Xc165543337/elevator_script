@@ -27,9 +27,9 @@ import field as field_items
 from combat import Calibration
 from field import FieldPrep
 from mdp import (BOSS_WINDOWS, FIELD_HEALS, SHOP_HEALS, HealItem, MdpConfig, ValueTables, _Closure,
-                 flee_chance, flee_hit, interp_matrix, load_tables, save_tables, solve, tables_key,
-                 with_calibration)
-from model import BOSS_WINDOW, REGULAR_ROUND_CAP, Build, fight
+                 elite_pause_kernel, elite_pause_value, flee_chance, flee_hit, interp_matrix, load_tables,
+                 save_tables, solve, tables_key, with_calibration)
+from model import BOSS_WINDOW, Build, fight, fight_segment, pauses_after_segment
 from policy import BossFarmPolicy, Decision, PolicyConfig
 
 
@@ -43,6 +43,7 @@ class MarkovConfig:
     prep_min_death: float = 0.001   # search field preparations only against regular fights at least this deadly
     extract_below: float = 0.0      # extract once expected further bosses drop below this (0 = never)
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
+    pause_samples: int = 48         # live fights per (hp, elite hp) point when valuing the elite pause
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
     cache_dir: str = "cache"
     mdp: MdpConfig = field(default_factory=MdpConfig)
@@ -167,7 +168,9 @@ class MarkovPolicy(BossFarmPolicy):
     def __init__(self, cal: Calibration, config: PolicyConfig | None = None,
                  markov: MarkovConfig | None = None, log: Callable[[str], None] | None = None):
         super().__init__(cal, config)
-        self.mcfg = markov or MarkovConfig()
+        markov = markov or MarkovConfig()
+        # one source of truth for the server's round limits: the policy config
+        self.mcfg = replace(markov, mdp=replace(markov.mdp, rules=self.cfg.rules))
         self.planner = Planner(self.mcfg, log)
         self._rng = np.random.default_rng()
 
@@ -245,7 +248,8 @@ class MarkovPolicy(BossFarmPolicy):
         return out
 
     def _live_build(self, state: dict) -> Build:
-        return self._calibrated(field_items.live_build(state["run"], self.current_build(state)))
+        folded = (state["player"].get("secondary") or {}).get("mitigation") is not None
+        return self._calibrated(field_items.live_build(state["run"], self.current_build(state), folded))
 
     # ------------------------------------------------------------------ encounters
     def _fight(self, state: dict, ctr: dict) -> Decision:
@@ -259,7 +263,9 @@ class MarkovPolicy(BossFarmPolicy):
     def _fight_curve(self, state: dict, tables: ValueTables, li: int, build: Build,
                      enemy: dict) -> tuple[np.ndarray, np.ndarray]:
         """(value, death probability) of fighting now, for every effective-HP grid point.
-        Regular enemies: the whole fight, then the ready table. Bosses: one window, then the boss table."""
+        Regular enemies: the fight up to its cap, then the ready table; an elite under live rules only
+        up to its pause, valued with heals at the pause and the remaining rounds. Bosses: one window,
+        then the boss table. The death probability covers this segment only."""
         g, grid = state["run"]["floor"], tables.grid
         start, hp, shield = self._sim_starts(grid, build)
         ehp = np.full(len(start), float(enemy["hp"]))
@@ -276,14 +282,37 @@ class MarkovPolicy(BossFarmPolicy):
             win_value = 1.0 + float(np.interp(1.0, grid, tables.ready[g][li]))
             after = np.where(ehp <= 0, win_value, np.einsum("sn,nb,sb->s", we, nxt, wb))
         else:
-            hp, shield, *_ = fight(build, hp, shield, enemy, boss=False, ehp=ehp, rounds=REGULAR_ROUND_CAP,
-                                   rng=self._rng)
+            rules = self.mcfg.mdp.rules
+            first, rounds = fight_segment(enemy, rules)
+            hp, shield, ehp, *_ = fight(build, hp, shield, enemy, boss=False, ehp=ehp, start_round=first,
+                                        rounds=rounds, rng=self._rng)
             alive = hp > 0
-            after = np.interp((hp + shield) / build.hp, grid, tables.ready[g][li])
+            e1 = (hp + shield) / build.hp
+            after = np.interp(e1, grid, tables.ready[g][li])
+            if pauses_after_segment(enemy, rules):
+                pause = self._elite_pause(state, tables, li, build, enemy)              # (N, Nb)
+                elite_max = float(enemy.get("max_hp") or enemy["hp"])
+                we = interp_matrix(e1, grid)
+                wb = interp_matrix(np.maximum(ehp, 0.0) / elite_max, tables.boss_grid)
+                after = np.where(ehp > 0, np.einsum("sn,nb,sb->s", we, pause, wb), after)
         value = isotonic(self._per_point(start, np.where(alive, after, 0.0), len(grid)))
         death = 1.0 - self._per_point(start, alive.astype(float), len(grid))
         death[0] = 1.0
         return value, death
+
+    def _elite_pause(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict) -> np.ndarray:
+        """Values at the coming elite pause under price index li, [hp point, elite-hp point]: heals from
+        the live inventory, then the remaining rounds against this elite. Guard / burst charges are
+        assumed spent by then (conservative)."""
+        run, grid = state["run"], tables.grid
+        heal = _Closure([o.item for o in self._heal_options(run, True)], grid, float(run["max_hp"]),
+                        np.array([float(tables.lambdas[li])]), self.mcfg.mdp.heal_iterations)
+        foe = {**enemy, "hp": float(enemy.get("max_hp") or enemy["hp"]), "rounds_fought": 0}
+        later = replace(build, guard_hits=0, burst_hits=0)
+        lands = elite_pause_kernel(later, foe, grid, tables.boss_grid, self.mcfg.pause_samples, self._rng,
+                                   self.mcfg.mdp.rules)
+        ready = tables.ready[run["floor"]][li][None, :]
+        return elite_pause_value(lands, ready, heal, len(tables.boss_grid))[0]
 
     def _encounter(self, state: dict, ctr: dict, tables: ValueTables) -> Decision:
         """Heal / field buff / grenade / smoke / flee / fight, whichever gives the most expected bosses.

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 
 from combat import Calibration, FightEstimate, chain_risk, estimate, run_build
 from gear import GearModel
-from model import Build
+from model import LIVE_RULES, Build, FightRules
 
 # Heal amount (fraction of max HP) of shop supplies; field items are parsed from text.
 SUPPLY_HEAL = {
@@ -51,6 +51,7 @@ class PolicyConfig:
     swap_margin: float = 1.2            # swap loot into a full safe box only if worth >= margin x cheapest secured
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
+    rules: FightRules = LIVE_RULES      # round limits of the server being played (offline engine: LEGACY_RULES)
 
 
 @dataclass
@@ -122,22 +123,23 @@ class BossFarmPolicy:
 
     def lasting_build(self, state: dict) -> Build:
         """Build without floor-limited buffs (they can expire during a multi-floor rush).
-        Uses the effective stats last observed while no such buff was active, and only the permanent
+        Uses the effective stats and damage reduction last observed while no such buff was active, and only the permanent
         leech / follow-up / boss bonus from gear (buffs such as 虹吸滴管 +22% leech expire)."""
         run = state["run"]
-        if not (run.get("field_buffs") or []):
-            self._base_stats = dict(run["effective_stats"])
         build = self.current_build(state)
+        if not (run.get("field_buffs") or []):
+            self._base_stats = {**run["effective_stats"], "reduction": build.reduction}
         base = self._base_stats
         if base:
             build = replace(build, atk=min(build.atk, base["atk"]), defense=min(build.defense, base["def"]),
-                            agi=min(build.agi, base["agi"]))
+                            agi=min(build.agi, base["agi"]),
+                            reduction=min(build.reduction, base.get("reduction", build.reduction)))
         perm = self._affix_build
         return replace(build, leech=min(build.leech, perm.leech), combo=min(build.combo, perm.combo),
                        boss_bonus=min(build.boss_bonus, perm.boss_bonus))
 
     def estimate(self, state: dict) -> FightEstimate:
-        return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples)
+        return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples, rules=self.cfg.rules)
 
     @staticmethod
     def _field_heals(run: dict) -> list[tuple[float, dict]]:

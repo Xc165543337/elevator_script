@@ -46,12 +46,14 @@ def worn_mods(run: dict) -> dict[str, float]:
     return totals
 
 
-def live_build(run: dict, build: Build) -> Build:
-    """Add the field effects that the state does not expose as numbers."""
+def live_build(run: dict, build: Build, mitigation_in_stats: bool = False) -> Build:
+    """Add the field effects that the state does not expose as numbers. `mitigation_in_stats`: the
+    server's secondary stats carry 打击减伤 (newer servers), which already includes field items."""
     mods = active_mods(run)
+    extra_reduction = 0.0 if mitigation_in_stats else _cap("mitigation", mods.get("mitigation", 0.0))
     out = replace(build, dodge_bonus=_cap("dodge", mods.get("dodge", 0.0)),
                   crit_bonus=build.crit_bonus + _cap("crit", mods.get("crit", 0.0)),
-                  reduction=build.reduction + _cap("mitigation", mods.get("mitigation", 0.0)),
+                  reduction=build.reduction + extra_reduction,
                   heavy=build.heavy + _cap("first", mods.get("first", 0.0)),
                   thorns=build.thorns + _cap("thorns", mods.get("thorns", 0.0)))
     for charge in run.get("field_charges") or []:

@@ -29,6 +29,11 @@ const GROWTH: Record<EnemyKind, Growth> = {
 
 export const BOSS_WINDOW = 4
 export const BOSS_HEAVY = 1.26
+/** 普通怪 15 回合未分胜负即撤退（无战利品） */
+export const REGULAR_ROUND_CAP = 15
+/** 精英（2026-11-25 起）：最多 16 回合，第 8 回合后暂停整备（可用药、换临装），平局仍撤退 */
+export const ELITE_ROUND_CAP = 16
+export const ELITE_BREAK = 8
 
 export interface Foe {
     hp: number
@@ -36,6 +41,14 @@ export interface Foe {
     def: number
     agi: number
     [key: string]: unknown
+}
+
+/** 现在开始的这一段战斗：[起始回合, 回合数]，到首领窗口结束、精英整备或回合上限为止 */
+export function fightSegment(foe: Foe): [number, number] {
+    const fought = Number(foe.rounds_fought || 0)
+    if (foe.boss) return [fought + 1, BOSS_WINDOW - (fought % BOSS_WINDOW)]
+    const end = foe.elite ? (fought < ELITE_BREAK ? ELITE_BREAK : ELITE_ROUND_CAP) : REGULAR_ROUND_CAP
+    return [fought + 1, Math.max(1, end - fought)]
 }
 
 export function bossIndex(floor: number): number {

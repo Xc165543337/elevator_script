@@ -7,6 +7,8 @@ State (per floor g): effective HP `e` = (HP + shield) / max HP on a grid over [0
 decision point:
   * ready      - nothing pending: heal (non-combat items), step one floor, or rush;
   * encounter  - a normal monster or elite is waiting: heal (any item), fight, or flee;
+  * elite pause - (live rules) after round 8 of an elite fight, with elite HP fraction b: heal, then
+                 fight the remaining rounds (solved on the fly, not stored);
   * boss       - before boss window w (1..4, window 4+ is stationary) with boss HP fraction b.
 
 Healing stock is a run-long budget shared by every decision. Tracking it exactly would multiply the
@@ -31,14 +33,15 @@ from typing import Callable
 
 import numpy as np
 
-from model import BOSS_WINDOW, REGULAR_ROUND_CAP, Build, enemy, fight, floor_mix, is_boss_floor
+from model import (BOSS_WINDOW, LIVE_RULES, REGULAR_ROUND_CAP, Build, FightRules, enemy, fight, floor_mix,
+                   is_boss_floor)
 
 E_MAX = 1.25                 # effective HP cap: full HP plus the 25% shield of a barrier serum
 BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ramp); 4+ is stationary
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 4            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 5            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -144,6 +147,8 @@ class MdpConfig:
     lambdas: tuple = (0.0, 0.01, 0.05, 0.15, 0.5, 10.0)
     # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left)
     smoke_prices: tuple = (0.0, 0.1, 0.3, 1.0, 1000.0)
+    pause_samples: int = 96        # Monte Carlo fights per (hp, elite hp) point of the elite-pause kernel
+    rules: FightRules = LIVE_RULES
     seed: int = 0
 
 
@@ -199,16 +204,16 @@ def grids(config: MdpConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nda
 
 
 # --------------------------------------------------------------------------- kernels
-def regular_kernel(build: Build, foe: dict, grid: np.ndarray, samples: int,
-                   rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def regular_kernel(build: Build, foe: dict, grid: np.ndarray, samples: int, rng: np.random.Generator,
+                   rounds: int = REGULAR_ROUND_CAP) -> tuple[np.ndarray, np.ndarray]:
     """(kill, draw): P[i, j] of starting at effective HP grid[i] and landing at grid[j] after a regular
-    fight that the enemy loses, or that hits the 15-round cap (it retreats; a rush stops there).
+    fight that the enemy loses, or that hits the round cap (it retreats; a rush stops there).
     kill + draw rows sum to P(survive); row 0 (dead) is empty."""
     n = len(grid)
     start = np.repeat(np.arange(1, n), samples)
     e0 = grid[start]
     hp, shield = np.minimum(e0, 1.0) * build.hp, np.maximum(e0 - 1.0, 0.0) * build.hp
-    hp, shield, ehp, *_ = fight(build, hp, shield, foe, boss=False, rounds=REGULAR_ROUND_CAP, rng=rng)
+    hp, shield, ehp, *_ = fight(build, hp, shield, foe, boss=False, rounds=rounds, rng=rng)
     e1 = (hp + shield) / build.hp
     killed = (hp > 0) & (ehp <= 0)
     drawn = (hp > 0) & (ehp > 0)
@@ -216,32 +221,65 @@ def regular_kernel(build: Build, foe: dict, grid: np.ndarray, samples: int,
             _deposit(start[drawn], e1[drawn], grid, n, 1.0 / samples))
 
 
+def segment_kernel(build: Build, foe: dict, *, boss: bool, start_round: int, rounds: int, grid: np.ndarray,
+                   enemy_grid: np.ndarray, samples: int, rng: np.random.Generator,
+                   fresh: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """One fight segment (boss window, elite half) from every (hp point, enemy-hp point) state, or with
+    `fresh` from every hp point against an unhurt enemy. foe["hp"] is the enemy's full HP.
+    Returns (cont, kill): cont[s, s'] = P(both still alive, landing at flattened state s' =
+    hp index * len(enemy_grid) + enemy-hp index); kill[s, j] = P(the enemy dies and the player lands
+    at hp point j), kill heal included. Rows of a dead start (hp point 0) are empty."""
+    n, nb = len(grid), len(enemy_grid)
+    states = n * nb
+    rows = n if fresh else states
+    start = np.repeat(np.arange(rows), samples)
+    if fresh:
+        ei, b0 = start, np.ones(len(start))
+    else:
+        ei, bi = np.divmod(start, nb)
+        b0 = enemy_grid[bi]
+    e0 = grid[ei]
+    hp, shield = np.minimum(e0, 1.0) * build.hp, np.maximum(e0 - 1.0, 0.0) * build.hp
+    hp, shield, ehp, *_ = fight(build, hp, shield, foe, boss=boss, ehp=b0 * foe["hp"],
+                                start_round=start_round, rounds=rounds, rng=rng)
+    alive = (hp > 0) & (ei > 0)
+    won = alive & (ehp <= 0)
+    going = alive & (ehp > 0)
+    e1 = (hp + shield) / build.hp
+    kill = _deposit(start[won], e1[won], grid, rows, 1.0 / samples)
+    # bilinear deposit of the survivors: split on hp, then on enemy hp
+    src = start[going] * states
+    cont = np.zeros(rows * states)
+    for ie, we in _split(e1[going], grid):
+        for ib, wb in _split(ehp[going] / foe["hp"], enemy_grid):
+            cont += np.bincount(src + ie * nb + ib, weights=we * wb / samples, minlength=rows * states)
+    return cont.reshape(rows, states), kill
+
+
 def boss_kernel(build: Build, foe: dict, window: int, grid: np.ndarray, boss_grid: np.ndarray,
                 samples: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """One boss window from every (hp point, boss-hp point).
     Returns (P, win): P[s, s'] over flattened (hp, boss hp) states while both live, win[s] = P(boss dies)."""
-    n, nb = len(grid), len(boss_grid)
-    states = n * nb
-    start = np.repeat(np.arange(states), samples)
-    ei, bi = np.divmod(start, nb)
-    e0, b0 = grid[ei], boss_grid[bi]
-    hp, shield = np.minimum(e0, 1.0) * build.hp, np.maximum(e0 - 1.0, 0.0) * build.hp
-    first_round = (window - 1) * BOSS_WINDOW + 1
-    hp, shield, ehp, *_ = fight(build, hp, shield, foe, boss=True, ehp=b0 * foe["hp"],
-                                start_round=first_round, rounds=BOSS_WINDOW, rng=rng)
-    alive = hp > 0
-    won = alive & (ehp <= 0) & (ei > 0)
-    going = alive & (ehp > 0) & (ei > 0)
-    win = np.bincount(start[won], minlength=states) / samples
-    e1 = (hp + shield)[going] / build.hp
-    b1 = ehp[going] / foe["hp"]
-    # bilinear deposit: split on hp, then on boss hp
-    src = start[going] * states
-    p = np.zeros(states * states)
-    for ie, we in _split(e1, grid):
-        for ib, wb in _split(b1, boss_grid):
-            p += np.bincount(src + ie * nb + ib, weights=we * wb / samples, minlength=states * states)
-    return p.reshape(states, states), win
+    cont, kill = segment_kernel(build, foe, boss=True, start_round=(window - 1) * BOSS_WINDOW + 1,
+                                rounds=BOSS_WINDOW, grid=grid, enemy_grid=boss_grid, samples=samples, rng=rng)
+    return cont, kill.sum(axis=1)
+
+
+def elite_pause_kernel(build: Build, foe: dict, grid: np.ndarray, enemy_grid: np.ndarray, samples: int,
+                       rng: np.random.Generator, rules: FightRules) -> np.ndarray:
+    """lands[s, j]: from the elite pause at flattened state s, P(the player survives the remaining
+    rounds and ends at hp point j). The elite dying and the elite retreating at the cap lead to the same
+    place (this floor's ready state), so only the player's HP matters."""
+    cont, kill = segment_kernel(build, foe, boss=False, start_round=rules.elite_break + 1,
+                                rounds=rules.elite_round_cap - rules.elite_break, grid=grid,
+                                enemy_grid=enemy_grid, samples=samples, rng=rng)
+    return cont.reshape(len(cont), len(grid), len(enemy_grid)).sum(axis=2) + kill
+
+
+def elite_pause_value(lands: np.ndarray, ready: np.ndarray, heal: "_Closure", n_enemy: int) -> np.ndarray:
+    """Values at the elite pause, [price, hp point, elite-hp point]: heal with any item, then fight on.
+    lands: elite_pause_kernel; ready: (prices, hp points) values of this floor's ready state."""
+    return heal((ready @ lands.T).reshape(len(ready), -1, n_enemy))
 
 
 def _split(x: np.ndarray, grid: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -319,13 +357,29 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     boss_tables: dict[int, np.ndarray] = {}
     # rush continuation: mid[h][j-1] = value about to enter floor h with j floors left (not the first)
     mid = {top + 1: np.zeros((RUSH_FLOORS, nl, n)), top + 2: np.zeros((RUSH_FLOORS, nl, n))}
-    kernels: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
+    rules = config.rules
+    kernels: dict[tuple[str, int], tuple] = {}
+
+    def reference(floor: int) -> int:
+        """Floor whose (strongest) enemy stands in for its kernel_stride block."""
+        return min(top, (floor - 1) // config.kernel_stride * config.kernel_stride + config.kernel_stride)
 
     def kernel(kind: str, floor: int) -> tuple[np.ndarray, np.ndarray]:
-        ref = min(top, (floor - 1) // config.kernel_stride * config.kernel_stride + config.kernel_stride)
-        key = (kind, ref)
+        """(kill, draw) of a fight without a pause."""
+        key = (kind, reference(floor))
         if key not in kernels:
-            kernels[key] = regular_kernel(build, enemy(kind, ref, map_id), grid, config.samples, rng)
+            rounds = rules.elite_round_cap if kind == "elite" else REGULAR_ROUND_CAP
+            kernels[key] = regular_kernel(build, enemy(kind, key[1], map_id), grid, config.samples, rng, rounds)
+        return kernels[key]
+
+    def elite_kernels(floor: int) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray]:
+        """((cont, kill) of the rounds before the pause from a fresh elite, pause lands)."""
+        key = ("elite_pause", reference(floor))
+        if key not in kernels:
+            foe = enemy("elite", key[1], map_id)
+            first = segment_kernel(build, foe, boss=False, start_round=1, rounds=rules.elite_break, grid=grid,
+                                   enemy_grid=boss_grid, samples=config.samples, rng=rng, fresh=True)
+            kernels[key] = first, elite_pause_kernel(build, foe, grid, boss_grid, config.pause_samples, rng, rules)
         return kernels[key]
 
     def income(floor: int) -> np.ndarray:
@@ -353,8 +407,13 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         # 3. encounters on g
         for kind in ("normal", "elite"):
             foe = enemy(kind, g, map_id)
-            killed, drawn = kernel(kind, g)
-            fight_value = ready[g] @ (killed + drawn).T
+            if kind == "elite" and rules.elite_break:
+                (cont, kill), lands = elite_kernels(g)
+                pause = elite_pause_value(lands, ready[g], any_heal, nb)              # (L, N, Nb)
+                fight_value = ready[g] @ kill.T + pause.reshape(nl, -1) @ cont.T
+            else:
+                killed, drawn = kernel(kind, g)
+                fight_value = ready[g] @ (killed + drawn).T
             fail_at = interp_matrix(np.maximum(grid - flee_hit(build, foe), 0.0), grid)
             p = flee_chance(build, g)
             flee_value = p * ready[g] + (1 - p) * (fight_value @ fail_at.T)

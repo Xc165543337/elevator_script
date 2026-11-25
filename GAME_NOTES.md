@@ -31,12 +31,35 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
 ## Mechanics that matter for an agent
 - **A regular `fight` resolves to the end** (victory or death) in one call → decide fight / flee / heal *before* engaging.
 - **Round caps** (confirmed in the server code):
-  - Regular monsters and elites: at most 15 rounds per fight. A draw makes the monster retreat: no loot,
+  - Regular monsters: at most 15 rounds per fight. A draw makes the monster retreat: no loot,
     no kill-heal. A rush stops on that floor after a draw.
+  - Elites (live server since 2026-11-25): at most 16 rounds, with a pause after round 8 ("第 8 回合可整备"):
+    HP and the elite's state carry over and you can heal or change gear before resuming; a draw at 16 still
+    makes it retreat. The enemy shows `rounds_fought`. The public bot repository still has the old rule
+    (15 rounds, no pause); `--rules legacy` / `model.LEGACY_RULES` model it for offline runs.
   - Extraction gatekeepers: at most 15 rounds per fight. A draw keeps both sides' HP and round count;
     the fight resumes from there.
   - Bosses: 4 rounds per `fight`. HP and the cumulative round count carry over; between windows you can
     use potions, field items and change temp gear. A boss never retreats.
+- **Blessings (闻岑闪耀祝福, live since 2026-11-25).** A real run needs two pursued sets (`start` param
+  `focus: [set id, set id]`, chat `追寻 1 8`; a running run that lacks them shows `heirlooms.needs_focus` and
+  takes the `pursue` command). Each formal boss kill rolls once for a shining drop: 3% at F8, rising with
+  depth to 10%; a drop picks one of the two sets with equal odds, missing pieces weighted higher. Pieces go
+  into four independent slots (`equip_blessing {slot, piece}`, chat `祝福装配 槽位 编号`); 2 and 4 pieces of a
+  set give its bonuses, single pieces only +1/+2 to one stat. State: `heirlooms.{sets, pieces, owned, slots,
+  focus, needs_focus}`; set ids B01-B08. Set bonuses (2 pieces / 4 pieces):
+  | Set | 2 pieces | 4 pieces |
+  |---|---|---|
+  | B01 错线测绘簿 | hit +14 pp (max 100%) | first missed main attack per fight re-rolls as a hit |
+  | B02 末班灯列 | crit +10 pp above the cap (max 75%) | every 3rd main-attack hit on one enemy echoes 50% of its damage |
+  | B03 白线压舱契 | damage reduction +10 pp (max 65%) | first hit above 10% max HP per fight: 70% of the excess removed (cap 14% max HP) |
+  | B04 退件邮路 | dodge +8 pp (max 60%) | a dodge stores a ×1.45 charge for the next main-attack hit |
+  | B05 余温窑账 | crit multiplier +0.35 | crits crack enemy defence −12% each (max 2) |
+  | B06 缺刻值夜表 | pierce +12 pp (max 87%) | rounds 4, 8, 12, ...: act first and take ×0.65 damage (boss heavy hits too) |
+  | B07 逆风放线人 | follow-up +12 pp (max 82%) | first follow-up hit per fight heals 40% of its damage (cap 12% max HP) |
+  | B08 雪线留声筒 | leech +8 pp (max 50%; per-round leech heal still capped at 10% max HP) | once per run, a lethal monster hit leaves 20% max HP (before the doll) |
+- The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
+  `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.
 - Extraction ambush on harder maps (e.g. Zenith 39% from F4) unless the floor's monster was killed.
 - Full combat/drop/monster-growth formulas: `docs/formulas_zh.txt`. Item/map/affix reference: `docs/game_guide_zh.txt`.

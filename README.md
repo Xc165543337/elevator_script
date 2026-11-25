@@ -96,6 +96,12 @@ Useful options: `--loadout field_surgery=12,critical_serum=8,triage_vial=10,coff
 `--gold-reserve 1000000`, `--max-floor N`, `--delay 0.05`, `--balance-gear-score N`, `--no-restock`, `--verbose`.
 An interrupted run is resumed automatically on the next start.
 
+The default loadout carries every shop heal and smoke bombs at the live carry limit (50 each) plus two
+adrenaline shots. Real runs pursue two blessing sets (追寻): `--focus 6,8` picks them by number (or id,
+`B06,B08`); without it the pair chosen last time is reused, and the run is not started if there is none.
+New shining pieces are logged and, in a new `runs.csv`, written to its `shining` column (an existing file keeps its columns). `--rules legacy` plays
+with the older engine's round limits (elites 15 rounds, no pause); it is only meant for `offline.py`.
+
 ## Markov policy (`--policy markov`)
 
 The run is modelled as a Markov decision process: state = floor, effective HP (HP + shield) and the
@@ -111,6 +117,9 @@ that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences wor
 - A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
   the encounter instead.
 - Rush is chosen while it gives up at most `rush_tolerance` (0.02) expected bosses against single steps.
+- Elites under live rules are two segments: the first 8 rounds are valued with the best heals at the
+  pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
+  solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.
 
 Offline comparison against the game engine (needs a checkout of `SlimeTROH/longniang-qqbot`):
 

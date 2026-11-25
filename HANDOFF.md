@@ -1,4 +1,4 @@
-# Handoff — 2026-11-25 ~10:20
+# Handoff — 2026-11-25 ~13:15
 
 ## State
 - Repo `Xc165543337/elevator_script` (main @ e28ff28) is the master copy. It already contains all agent
@@ -52,8 +52,26 @@
 - `farm.py --policy markov` selects it; default stays `threshold`.
 - Model fixes from the data: floor encounter mix follows the server curve (was flat 23% / 14%); a rush
   halts after a regular-fight draw.
-- Offline comparison (threshold 20 runs, then markov 10 runs) was running when this was written; first
-  threshold runs: 68, 79, 61, 73 bosses. Results not in yet.
+- Offline results (old engine, bosses per run): threshold 68, 79, 61, 73, 71, 57, 61 (mean 67.1) and one
+  run with 50 smokes: 54. Markov before the rush/regen fix 62.9 +- 1.9 (10 runs); after it 79, 78, 83
+  (mean 80, deaths only once the shop heals ran out around F1550); one run with 50 smokes: 47 (a 0.4%
+  elite fight lost at F918). Single runs are noisy.
+
+## Server update of 2026-11-25 (adapted on this branch)
+- Elites: 16 rounds with a pause after round 8 (heal / change gear). `model.FightRules`, `fight_segment`;
+  the MDP values the pause (`mdp.elite_pause_kernel`), the live policy evaluates it per elite, the
+  threshold estimate covers the segment ahead. `--rules legacy` keeps the old rule for `offline.py`.
+- Blessings (闻岑闪耀祝福): real runs need two pursued sets (`--focus`, default = last choice, currently
+  B06 + B08). Shining drops are logged. Set bonuses are listed in GAME_NOTES.md; none are worn yet
+  (one piece each of B06 and B08 owned), so they are not modelled. Once 2+ pieces of a set are worn, the
+  model needs: B04 dodge and B01 hit (the model computes dodge / hit from agility itself), the 4-piece
+  effects (B06 抢拍 is large against boss heavy hits).
+- `player.secondary.mitigation` (打击减伤) is read into the build (a server total, field items included).
+- Not verified on a live elite yet: the field names of the pause state (`rounds_fought` = 8, controls).
+  Watch the first live elite in `--verbose` output.
+- The userscript port follows (pursuit, elite segment, mitigation, shining log). Its parity fixture was
+  not regenerated: the Python fight engine has moved on (field-item build fields, follow-up order) and the
+  TS port has not, which a regenerated fixture exposes (2 failing parity tests). Separate follow-up.
 
 ## Live run with the Markov policy (not started yet)
 - Credentials: the cloud environment now has `ELEVATOR_USER` and `ELEVATOR_PASSWORD` (accepted as alias of
@@ -62,7 +80,8 @@
   otherwise `farm.py` resumes that run and two agents drive it.
 - Order: `python farm.py --mode sim --policy markov --runs 1 --verbose` (free; first contact of the new code
   with the live server, whose state may differ from the old engine), then
-  `python farm.py --mode real --policy markov --runs 1 --i-understand-real`.
+  `python farm.py --mode real --policy markov --runs 1 --i-understand-real` (add `--focus 6,8` to change the
+  pursued blessing sets).
 - Expect 2-3 pauses of ~1 min in the first run (table solves), cached afterwards.
 
 ## Open items

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from model import BOSS_WINDOW, REGULAR_ROUND_CAP, Build, enemy, fight
+from model import BOSS_WINDOW, LIVE_RULES, Build, FightRules, enemy, fight, fight_segment
 
 BERSERK_CAP = 0.75
 
@@ -101,11 +101,15 @@ class FightEstimate:
 
 
 def run_build(state: dict, affix_build: Build) -> Build:
-    """Combat Build for the current moment of a run: live stats + permanent affixes."""
+    """Combat Build for the current moment of a run: live stats + permanent affixes.
+    The server's secondary stats are totals (gear, blessings, active field items); `mitigation`
+    (打击减伤) only exists on servers since 2026-11-25."""
     run, sec = state["run"], state["player"].get("secondary") or {}
     es = run["effective_stats"]
     mult = float(run.get("damage_multiplier") or 1)
+    reduction = float(sec["mitigation"]) if sec.get("mitigation") is not None else affix_build.reduction
     return replace(affix_build, hp=run["max_hp"], atk=es["atk"], defense=es["def"], agi=es["agi"], luk=es["luk"],
+                   reduction=reduction,
                    pierce=sec.get("pierce") or affix_build.pierce, leech=sec.get("leech") or affix_build.leech,
                    combo=sec.get("combo") or affix_build.combo, boss_bonus=sec.get("boss_bonus") or affix_build.boss_bonus,
                    crit_mult=sec.get("crit_multiplier") or affix_build.crit_mult,
@@ -114,12 +118,13 @@ def run_build(state: dict, affix_build: Build) -> Build:
 
 
 def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
-             rng: np.random.Generator | None = None) -> FightEstimate:
+             rng: np.random.Generator | None = None, rules: FightRules = LIVE_RULES) -> FightEstimate:
+    """Outcome of the fight segment that starts now: up to the next pause (boss window, elite pause)
+    or the round cap. `win` is P(the enemy dies within it)."""
     run = state["run"]
     enemy = run["event"]["enemy"]
     boss = bool(enemy.get("boss"))
-    start = (enemy.get("rounds_fought") or 0) + 1
-    rounds = BOSS_WINDOW - ((start - 1) % BOSS_WINDOW) if boss else REGULAR_ROUND_CAP
+    start, rounds = fight_segment(enemy, rules)
     kp, ke = cal.conservative()
     tuned = replace(build, dealt_mult=build.dealt_mult * kp, taken_mult=build.taken_mult * ke)
     n = samples

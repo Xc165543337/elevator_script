@@ -20,6 +20,41 @@ _GROWTH = {  # (a, b, c) per stat: value = a + b*x + c*z
 }
 BOSS_WINDOW, BOSS_HEAVY = 4, 1.26
 REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rounds (no kill, no kill-heal)
+
+
+@dataclass(frozen=True)
+class FightRules:
+    """Round limits that differ between server versions.
+
+    Since 2026-11-25 the live server gives elites 16 rounds with a pause after round 8: HP and the
+    elite's state are kept, and the player may heal or change gear before resuming. A draw at the cap
+    still makes the elite retreat without loot. The public bot repository (used by offline.py) predates
+    this and fights elites like normal monsters (15 rounds, no pause)."""
+    elite_round_cap: int = 16
+    elite_break: int = 8            # round after which an elite fight pauses (0 = no pause)
+
+
+LIVE_RULES = FightRules()
+LEGACY_RULES = FightRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0)
+
+
+def fight_segment(enemy: dict, rules: FightRules = LIVE_RULES) -> tuple[int, int]:
+    """(first round, number of rounds) of the fight segment that starts now: up to the end of the
+    boss window, the elite pause or the round cap, whichever comes first."""
+    fought = int(enemy.get("rounds_fought") or 0)
+    if enemy.get("boss"):
+        return fought + 1, BOSS_WINDOW - fought % BOSS_WINDOW
+    if enemy.get("elite"):
+        end = rules.elite_break if 0 < rules.elite_break and fought < rules.elite_break else rules.elite_round_cap
+    else:
+        end = REGULAR_ROUND_CAP
+    return fought + 1, max(1, end - fought)
+
+
+def pauses_after_segment(enemy: dict, rules: FightRules = LIVE_RULES) -> bool:
+    """Whether the segment starting now ends at the elite pause (the fight then resumes)."""
+    fought = int(enemy.get("rounds_fought") or 0)
+    return bool(enemy.get("elite") and not enemy.get("boss") and 0 < rules.elite_break and fought < rules.elite_break)
 # Encounter weights of a non-boss floor (server `event_weights`, all maps). The server blends the
 # F1 row into the deep row with a 12-floor half-life; both rows sum to 100. Verified on 7.8k real
 # Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%, chest/relic 33.8%).

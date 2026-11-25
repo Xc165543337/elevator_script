@@ -1,6 +1,7 @@
 """Tests for the MDP solver (mdp.py) and the policy built on it (markov_policy.py)."""
 import os
 import sys
+from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -9,8 +10,9 @@ import pytest  # noqa: E402
 
 from combat import Calibration  # noqa: E402
 from markov_policy import MarkovConfig, MarkovPolicy, heal_stock  # noqa: E402
-from mdp import SHOP_HEALS, MdpConfig, interp_matrix, solve  # noqa: E402
-from model import Build, boss_floors, enemy  # noqa: E402
+from mdp import SHOP_HEALS, MdpConfig, elite_pause_kernel, interp_matrix, solve  # noqa: E402
+from model import LEGACY_RULES, LIVE_RULES, Build, boss_floors, enemy, fight_segment, pauses_after_segment  # noqa: E402
+from policy import PolicyConfig  # noqa: E402
 
 # Deliberately fragile so that F100-F200 fights carry real risk (the live build is safe this shallow).
 BUILD = Build(hp=666, atk=120, defense=20, agi=30, luk=21, pierce=0.26, leech=0.06, heavy=0.38,
@@ -25,13 +27,29 @@ def tables():
     return solve(BUILD, "mall", SMALL)
 
 
-@pytest.fixture()
-def policy(tables, tmp_path):
-    p = MarkovPolicy(CAL, markov=MarkovConfig(cache_dir=str(tmp_path), live_samples=150, mdp=SMALL))
+@pytest.fixture(scope="module")
+def legacy_tables():
+    return solve(BUILD, "mall", replace(SMALL, rules=LEGACY_RULES))
+
+
+def make_policy(tables, cache_dir, rules=LIVE_RULES):
+    p = MarkovPolicy(CAL, PolicyConfig(rules=rules),
+                     MarkovConfig(cache_dir=str(cache_dir), live_samples=150, mdp=tables.config))
     p._affix_build, p._loadout = BUILD, ()
     p.planner._tables = tables
     p._rng = np.random.default_rng(7)
     return p
+
+
+@pytest.fixture()
+def policy(tables, tmp_path):
+    return make_policy(tables, tmp_path)
+
+
+@pytest.fixture()
+def legacy_policy(legacy_tables, tmp_path):
+    """The older engine of offline.py: elites fight 15 rounds without a pause."""
+    return make_policy(legacy_tables, tmp_path, LEGACY_RULES)
 
 
 def bag_of(*ids):
@@ -177,11 +195,11 @@ def test_guard_charges_cut_landed_hits():
     assert ratio == pytest.approx(0.58, abs=0.02)
 
 
-def test_uses_a_defensive_buff_before_a_risky_fight(policy):
+def test_uses_a_defensive_buff_before_a_risky_fight(legacy_policy):
     s = state(floor=165, hp=380, foe=foe("elite", 165))
     s["run"]["field"] = [{"id": "field_plate", "name": "应急陶板", "quantity": 1}]
     s["run"]["stats"] = s["run"]["effective_stats"]
-    decision = policy.decide(s)
+    decision = legacy_policy.decide(s)
     assert decision.command == "field_use" and decision.params == {"id": "field_plate"}, decision.reason
 
 
@@ -240,3 +258,44 @@ def test_single_steps_while_slow_serum_regen_is_pending(policy):
     s = state(hp=300, bag=bag_of("coffee"), controls=("rush", "down", "extract"))
     s["run"]["recovery"] = {"left": 2, "fraction": 0.16, "last_floor": 99}
     assert policy.decide(s).command == "down"
+
+
+# ------------------------------------------------------------------ live fight rules (2026-11-25)
+def test_fight_segment_follows_round_limits():
+    elite = {"elite": True, "boss": 0, "rounds_fought": 0}
+    assert fight_segment(elite, LIVE_RULES) == (1, 8) and pauses_after_segment(elite, LIVE_RULES)
+    assert fight_segment({**elite, "rounds_fought": 8}, LIVE_RULES) == (9, 8)
+    assert not pauses_after_segment({**elite, "rounds_fought": 8}, LIVE_RULES)
+    assert fight_segment(elite, LEGACY_RULES) == (1, 15) and not pauses_after_segment(elite, LEGACY_RULES)
+    assert fight_segment({"elite": False, "boss": 0}, LIVE_RULES) == (1, 15)
+    assert fight_segment({"elite": True, "boss": 3, "rounds_fought": 5}, LIVE_RULES) == (6, 3)
+
+
+def test_elite_pause_kernel_keeps_every_survivor():
+    grid, enemy_grid = np.linspace(0, 1.25, 11), np.linspace(0.2, 1.0, 5)
+    harmless = {"hp": 10**7, "atk": 1, "def": 0, "agi": 0}                # survives, never dies
+    lands = elite_pause_kernel(BUILD, harmless, grid, enemy_grid, 16, np.random.default_rng(3), LIVE_RULES)
+    rows = lands.sum(axis=1).reshape(len(grid), len(enemy_grid))
+    assert np.allclose(rows[0], 0) and np.allclose(rows[1:], 1)
+
+
+def test_heals_at_the_elite_pause_when_the_rest_is_risky(policy):
+    elite = {**foe("elite", 165), "rounds_fought": 8}
+    elite["hp"] = int(elite["max_hp"] * 0.6)
+    s = state(floor=165, hp=100, foe=elite, bag=bag_of(*["coffee"] * 6), controls=("fight", "flee", "use"))
+    decision = policy.decide(s)
+    assert decision.command == "use", decision.reason
+
+
+def test_fresh_elite_risk_covers_the_rounds_before_the_pause():
+    from combat import estimate
+    wall = {**foe("elite", 165), "hp": 10**7, "max_hp": 10**7}         # cannot be killed: risk = rounds survived
+    s = state(floor=165, hp=300, foe=wall)
+    live = estimate(BUILD, s, CAL, samples=2000, rng=np.random.default_rng(1), rules=LIVE_RULES)
+    legacy = estimate(BUILD, s, CAL, samples=2000, rng=np.random.default_rng(1), rules=LEGACY_RULES)
+    assert live.death < legacy.death
+
+
+def test_policy_rules_reach_the_solver(tmp_path, legacy_tables):
+    p = make_policy(legacy_tables, tmp_path, LEGACY_RULES)
+    assert p.mcfg.mdp.rules == LEGACY_RULES

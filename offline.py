@@ -8,7 +8,8 @@ sent to the real server.
 The engine's character is replaced by ours: base stats and gear affixes as measured on the live
 account (see CHARACTER), restocked with the usual loadout. The engine is an older version than the
 live server (some later patches are missing), so treat results as a comparison between policies, not
-as a forecast of live numbers.
+as a forecast of live numbers. It predates the elite pause and the blessings of 2026-11-25, so the
+policies play it with the legacy fight rules (--rules legacy).
 
     python offline.py --engine ../longniang-qqbot --runs 10 --policies threshold,markov
     python offline.py --engine ../longniang-qqbot --runs 10 --loadout "adrenaline=2,field_surgery=50,coffee=30"
@@ -116,7 +117,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
         os.remove(db)
     farm_args = build_parser().parse_args([
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
-        "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off",
+        "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", "legacy",
         *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
