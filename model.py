@@ -20,8 +20,21 @@ _GROWTH = {  # (a, b, c) per stat: value = a + b*x + c*z
 }
 BOSS_WINDOW, BOSS_HEAVY = 4, 1.26
 REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rounds (no kill, no kill-heal)
-# Approximate floor mix observed in the Mall (per non-boss floor).
-P_MOB, P_ELITE = 0.23, 0.14
+# Encounter weights of a non-boss floor (server `event_weights`, all maps). The server blends the
+# F1 row into the deep row with a 12-floor half-life; both rows sum to 100. Verified on 7.8k real
+# Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%, chest/relic 33.8%).
+_FLOOR_WEIGHTS_F1 = {"normal": 34, "elite": 5, "choice": 12, "loot": 49}   # loot includes relics
+_FLOOR_WEIGHTS_DEEP = {"normal": 33, "elite": 20, "choice": 13, "loot": 34}
+_FLOOR_WEIGHTS_HALF_LIFE = 12
+
+
+@lru_cache(maxsize=None)
+def floor_mix(floor: int) -> dict[str, float]:
+    """P(encounter kind) on a non-boss floor, ignoring the 潜行 (sneak) affix, which the build lacks."""
+    u = 1 - 2 ** (-max(0, floor - 1) / _FLOOR_WEIGHTS_HALF_LIFE)
+    weights = {k: v + (_FLOOR_WEIGHTS_DEEP[k] - v) * u for k, v in _FLOOR_WEIGHTS_F1.items()}
+    total = sum(weights.values())
+    return {k: v / total for k, v in weights.items()}
 
 
 def boss_floors(limit: int) -> list[int]:
@@ -258,7 +271,9 @@ def simulate_runs(build: Build, *, runs: int = 300, heals: int = 30, max_floor: 
             alive &= ~fighting  # boss never died within 60 windows -> treat as stuck
         else:
             roll = rng.random(runs)
-            for kind, mask in (("normal", roll < P_MOB), ("elite", (roll >= P_MOB) & (roll < P_MOB + P_ELITE))):
+            mix = floor_mix(floor)
+            p_normal, p_elite = mix["normal"], mix["elite"]
+            for kind, mask in (("normal", roll < p_normal), ("elite", (roll >= p_normal) & (roll < p_normal + p_elite))):
                 mask &= alive
                 if not mask.any():
                     continue

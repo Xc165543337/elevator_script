@@ -271,3 +271,13 @@ def test_active_slow_heal_blocks_every_copy():
     assert first.command == "use" and first.params == {"index": 24}
     policy.ban(state["run"]["floor"], first, item_id="slow_serum", message="上一次缓释治疗还在生效。")
     assert policy.decide(state).command != "use"     # no retry with the other copies
+
+
+def test_floor_mix_follows_server_weight_curve():
+    from model import floor_mix
+
+    first, deep = floor_mix(1), floor_mix(1000)
+    assert abs(sum(first.values()) - 1) < 1e-9 and abs(sum(deep.values()) - 1) < 1e-9
+    assert abs(first["elite"] - 0.05) < 1e-9 and abs(deep["elite"] - 0.20) < 1e-6
+    assert abs(floor_mix(13)["elite"] - 0.125) < 1e-9  # one half-life: halfway between 5% and 20%
+    assert abs(deep["normal"] - 0.33) < 1e-6
