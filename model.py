@@ -30,16 +30,18 @@ class ServerRules:
 
     Since 2026-11-25 the live server gives elites 16 rounds with a pause after round 8: HP and the
     elite's state are kept, and the player may heal or change gear before resuming. A draw at the cap
-    still makes the elite retreat without loot. The same update moved deep-floor encounters from elites to
-    normal monsters (the client shows 箱34% 怪41% 精12% 奇13% from F247 on). The public bot repository
-    (used by offline.py) predates both."""
+    still makes the elite retreat without loot. The same update moved encounters from elites to normal
+    monsters (the client shows 箱34% 怪41% 精12% 奇13% from F247 on). The public bot repository has the
+    same rules since its update of the same evening (f21568b); LEGACY_RULES model older checkouts."""
     elite_round_cap: int = 16
     elite_break: int = 8            # round after which an elite fight pauses (0 = no pause)
     deep_mix: tuple[int, int, int, int] = (41, 12, 13, 34)   # deep-floor weights: normal, elite, event, loot
+    first_mix: tuple[int, int, int, int] = (36, 3, 12, 49)   # F1 weights, same order (loot includes relics)
 
 
 LIVE_RULES = ServerRules()
-LEGACY_RULES = ServerRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0, deep_mix=(33, 20, 13, 34))
+LEGACY_RULES = ServerRules(elite_round_cap=REGULAR_ROUND_CAP, elite_break=0, deep_mix=(33, 20, 13, 34),
+                           first_mix=(34, 5, 12, 49))
 
 
 def fight_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> tuple[int, int]:
@@ -61,10 +63,9 @@ def pauses_after_segment(enemy: dict, rules: ServerRules = LIVE_RULES) -> bool:
     return bool(enemy.get("elite") and not enemy.get("boss") and 0 < rules.elite_break and fought < rules.elite_break)
 # Encounter weights of a non-boss floor (server `event_weights`, all maps). The server blends the
 # F1 row into the deep row (ServerRules.deep_mix) with a 12-floor half-life; both rows sum to 100.
-# The legacy rows were verified on 7.8k real Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%,
-# chest/relic 33.8%). The F1 row of the current server is assumed unchanged (it only matters below ~F60).
+# Both rows are the server's `event_weights` (content.json); the legacy ones were also verified on 7.8k
+# real Mall floors (F200+: normal 34.0%, elite 19.4%, event 12.8%, chest/relic 33.8%).
 MIX_KINDS = ("normal", "elite", "choice", "loot")    # loot includes relics
-_FLOOR_WEIGHTS_F1 = (34, 5, 12, 49)
 _FLOOR_WEIGHTS_HALF_LIFE = 12
 
 
@@ -72,7 +73,7 @@ _FLOOR_WEIGHTS_HALF_LIFE = 12
 def floor_mix(floor: int, rules: ServerRules = LIVE_RULES) -> dict[str, float]:
     """P(encounter kind) on a non-boss floor, ignoring the 潜行 (sneak) affix, which the build lacks."""
     u = 1 - 2 ** (-max(0, floor - 1) / _FLOOR_WEIGHTS_HALF_LIFE)
-    weights = [first + (deep - first) * u for first, deep in zip(_FLOOR_WEIGHTS_F1, rules.deep_mix)]
+    weights = [first + (deep - first) * u for first, deep in zip(rules.first_mix, rules.deep_mix)]
     total = sum(weights)
     return {k: w / total for k, w in zip(MIX_KINDS, weights)}
 

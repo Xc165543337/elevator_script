@@ -69,6 +69,14 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
   `player.secondary.condition.depth_shred` is the current floor's value (the formula is not known yet).
   The agent applies it to enemy defence in live fights; the solved tables do not (conservative).
   Modelled set effects: B06 2 pieces (pierce cap 87%) and 4 pieces (抢拍, rounds 4/8/... first, x0.65).
+- The public bot repository matches the live rules since f21568b (2026-11-25 22:34 +08:00). From it:
+  encounter rows F1 normal 36 / elite 3 / event 12 / chest 43 / relic 6 and from F30 41 / 12 / 13 / 26 / 8
+  (12-floor blend); shining drop chance min(10%, 3% + 7% x d / (d + 40)), d = floor - 8; two sets of two
+  pieces give a 44% depth-shred cap (full set 60%); mitigation is capped at 55% (B03 +10 pp).
+- **为了我所期待的** (`field_wish`): 0.1% per new floor on every map, one guaranteed per run on first reaching
+  F500. Using it wipes this run's pickups from the bag and safe box and kills the current enemy outright
+  (bosses included, normal rewards). Web API: `field_use {id: field_wish}` returns `state.wish_preview` with a
+  token, then `wish_confirm {token}`. The Markov agent keeps it for emergencies (see `MarkovConfig.wish_gain`).
 - The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
   `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.

@@ -309,3 +309,28 @@ def test_lasting_build_ignores_a_buff_that_lowers_a_stat(policy):
     buffed["run"]["field_buffs"] = [{"id": "field_clearance", "left": 2}]      # 清仓红牌: defence -20%
     buffed["run"]["effective_stats"] = {**calm["run"]["effective_stats"], "def": BUILD.defense * 0.8}
     assert policy.lasting_build(buffed).defense == BUILD.defense
+
+
+# ------------------------------------------------------------------ 为了我所期待的 (wish)
+def _wish_state(hp, missing_in_bag=False):
+    s = state(floor=170, hp=hp, foe=foe("boss", 170), controls=("fight", "field_use"))
+    s["run"]["field"] = [{"id": "field_wish", "name": "为了我所期待的", "quantity": 1}]
+    if missing_in_bag:
+        s["run"]["bag"] = [{"id": "prism_sun", "index": 1, "name": "熔阳刻痕", "value": 1, "can_protect": True}]
+    return s
+
+
+def test_wish_kills_a_boss_that_would_win(policy):
+    policy.missing_collectibles = lambda _state: {"prism_sun"}
+    s = _wish_state(60)
+    decision = policy.decide(s)
+    assert decision.command == "field_use" and decision.params == {"id": "field_wish"}, decision.reason
+    s["wish_preview"] = {"enemy": "boss", "bag": 0, "safe": 0, "value": 0, "token": "0123456789abcdef"}
+    confirm = policy.decide(s)
+    assert confirm.command == "wish_confirm" and confirm.params == {"token": "0123456789abcdef"}
+
+
+def test_wish_is_kept_for_a_safe_fight_and_never_wipes_a_missing_collectible(policy):
+    policy.missing_collectibles = lambda _state: {"prism_sun"}
+    assert policy.decide(_wish_state(666)).command != "field_use"
+    assert policy.decide(_wish_state(60, missing_in_bag=True)).params != {"id": "field_wish"}

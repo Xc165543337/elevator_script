@@ -329,7 +329,8 @@ class Farmer:
             self.check_floor_odds(run)
             floor = t["floor"] = run["floor"]
             decision = self.policy.decide(state)
-            enemy = (run.get("event") or {}).get("enemy") if decision.command == "fight" else None
+            killing = decision.command in ("fight", "wish_confirm")   # a confirmed wish kills the enemy outright
+            enemy = (run.get("event") or {}).get("enemy") if killing else None
             enemy = battle_enemy(state, enemy) if enemy else None
             fighter = self.policy.current_build(state) if enemy else None
             try:

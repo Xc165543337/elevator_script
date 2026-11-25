@@ -1,5 +1,5 @@
 {
- "_source": "SlimeTROH/longniang-qqbot plugins/endless_elevator/content.json expedition.field_items",
+ "_source": "SlimeTROH/longniang-qqbot plugins/endless_elevator/content.json expedition.field_items (f21568b)",
  "mod_caps": {
   "atk": [
    -0.5,
@@ -644,6 +644,13 @@
    "weight": 5,
    "shield": 86,
    "cost_hp": 0.15
+  },
+  "field_wish": {
+   "name": "为了我所期待的",
+   "map": "all",
+   "mode": "instant",
+   "weight": 0,
+   "wish": true
   }
  }
 }

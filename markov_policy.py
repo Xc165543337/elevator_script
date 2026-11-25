@@ -30,7 +30,9 @@ from mdp import (BOSS_WINDOWS, FIELD_HEALS, SHOP_HEALS, HealItem, MdpConfig, Val
                  elite_pause_kernel, elite_pause_value, flee_chance, flee_hit, interp_matrix, load_tables,
                  save_tables, solve, tables_key, with_calibration)
 from model import BOSS_WINDOW, Build, fight, fight_segment, pauses_after_segment
-from policy import BossFarmPolicy, Decision, PolicyConfig
+from policy import KEEP_IN_BAG, BossFarmPolicy, Decision, PolicyConfig
+
+WISH = "field_wish"   # 为了我所期待的
 
 
 @dataclass
@@ -46,6 +48,10 @@ class MarkovConfig:
     extract_below: float = 0.0      # extract once expected further bosses drop below this (0 = never)
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
     pause_samples: int = 48         # live fights per (hp, elite hp) point when valuing the elite pause
+    # 为了我所期待的 (one per run at F500, 0.1% per floor): kills the current enemy, wipes this run's loot.
+    # Used when it adds this share of the value at stake over the best alternative (~ the death risk it
+    # removes), so it stays in the bag for a real emergency.
+    wish_gain: float = 0.15
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
     cache_dir: str = "cache"
     mdp: MdpConfig = field(default_factory=MdpConfig)
@@ -175,6 +181,7 @@ class MarkovPolicy(BossFarmPolicy):
         self.mcfg = replace(markov, mdp=replace(markov.mdp, rules=self.cfg.rules))
         self.planner = Planner(self.mcfg, log)
         self._rng = np.random.default_rng()
+        self._wish_sent = False   # a wish preview was requested; confirm it on the next decision
 
     # ------------------------------------------------------------------ helpers
     def _calibrated(self, build: Build) -> Build:
@@ -366,11 +373,18 @@ class MarkovPolicy(BossFarmPolicy):
             best_prep, q_prep = self._best_preparation(state, tables, li, build, enemy, with_heals)
 
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, heals)
-        if smoke is not None:
-            q_smoke = float(np.interp(e, grid, tables.ready[g][li])) - mu
-            if q_smoke > max(q_base, q_heal, q_prep) + self.mcfg.heal_margin:
-                return Decision("use", {"index": smoke["index"]},
-                                f"{summary} -> smoke ({q_smoke:.2f} vs {max(q_base, q_heal, q_prep):.2f})")
+        q_smoke = float(np.interp(e, grid, tables.ready[g][li])) - mu if smoke is not None else -np.inf
+        if self._wish_ready(state):
+            ready = tables.ready[g][li]
+            q_wish = 1.0 + float(np.interp(1.0, grid, ready)) if boss else float(np.interp(e, grid, ready))
+            q_other = max(q_base, q_heal, q_prep, q_smoke)
+            if q_wish - q_other >= self.mcfg.wish_gain * q_wish:
+                self._wish_sent = True
+                return Decision("field_use", {"id": WISH},
+                                f"{summary} -> wish kill ({q_wish:.2f} vs {q_other:.2f})")
+        if smoke is not None and q_smoke > max(q_base, q_heal, q_prep) + self.mcfg.heal_margin:
+            return Decision("use", {"index": smoke["index"]},
+                            f"{summary} -> smoke ({q_smoke:.2f} vs {max(q_base, q_heal, q_prep):.2f})")
         if best_prep is not None and q_prep > max(q_base, q_heal) + self.mcfg.prep_margin:
             return Decision(best_prep[0], best_prep[1], f"{summary} -> {best_prep[2]} ({q_prep:.2f} vs {q_base:.2f})")
         if option and q_heal > q_go + self.mcfg.heal_margin:
@@ -380,6 +394,28 @@ class MarkovPolicy(BossFarmPolicy):
         if flee_q > fight_q + self.mcfg.heal_margin:
             return Decision("flee", {}, f"{summary} -> flee ({flee_q:.2f} vs {fight_q:.2f})")
         return Decision("fight", {}, f"{summary} -> fight ({fight_q:.2f})")
+
+    def _wish_ready(self, state: dict) -> bool:
+        """A wish in the field stash, and nothing it would wipe that matters: no still-missing collectible
+        and less loot than relic_loot_value in the bag and safe box."""
+        run = state["run"]
+        if not any(it.get("id") == WISH and (it.get("quantity") or 0) > 0 for it in run.get("field") or []):
+            return False
+        if not self._allowed(run["floor"], "field_use", {"id": WISH}):
+            return False
+        held = [*(run.get("bag") or []), *(run.get("safe") or [])]
+        if any(it.get("id") in self.missing_collectibles(state) for it in held):
+            return False
+        loot = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in held if it.get("id") not in KEEP_IN_BAG)
+        return loot < self.cfg.relic_loot_value
+
+    def _decide(self, state: dict) -> Decision:
+        sent, self._wish_sent = self._wish_sent, False
+        preview = state.get("wish_preview") or {}
+        if sent and preview.get("token") and (state["run"].get("event") or {}).get("enemy"):
+            return Decision("wish_confirm", {"token": preview["token"]},
+                            f"confirm wish on {preview.get('enemy')} (wipes {preview.get('value', 0):,} of run loot)")
+        return super()._decide(state)
 
     def _best_preparation(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict,
                           with_heals: Callable[[np.ndarray], float]) -> tuple[tuple | None, float]:

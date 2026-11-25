@@ -8,8 +8,8 @@ sent to the real server.
 The engine's character is replaced by ours: base stats and gear affixes as measured on the live
 account (see CHARACTER), restocked with the usual loadout. The engine is an older version than the
 live server (some later patches are missing), so treat results as a comparison between policies, not
-as a forecast of live numbers. It predates the elite pause and the blessings of 2026-11-25, so the
-policies play it with the legacy fight rules (--rules legacy).
+as a forecast of live numbers. Since its update of 2026-11-25 (f21568b) it has the live rules (elite
+pause, encounter odds, blessings); pass --rules legacy for an older checkout.
 
     python offline.py --engine ../longniang-qqbot --runs 10 --policies threshold,markov
     python offline.py --engine ../longniang-qqbot --runs 10 --loadout "adrenaline=2,field_surgery=50,coffee=30"
@@ -117,7 +117,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
         os.remove(db)
     farm_args = build_parser().parse_args([
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
-        "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", "legacy",
+        "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", args.rules,
         *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
@@ -136,6 +136,8 @@ def main() -> None:
     ap.add_argument("--policies", default="threshold,markov")
     ap.add_argument("--out", default=os.path.join(HERE, "logs", "offline"))
     ap.add_argument("--loadout", default=None, help="supplies to carry (farm.py format); default: farm.py's")
+    ap.add_argument("--rules", choices=("live", "legacy"), default="live",
+                    help="server rules of the engine checkout: live (f21568b and later) or legacy (older)")
     args = ap.parse_args()
     results = {p: run_policy(p, args) for p in args.policies.split(",")}
     print("\npolicy      runs  bosses (mean +- se)  floor (mean)  steps (mean)")
