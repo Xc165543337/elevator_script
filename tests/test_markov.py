@@ -190,3 +190,15 @@ def test_keeps_buffs_for_a_safe_fight(policy):
     s["run"]["field"] = [{"id": "field_plate", "name": "应急陶板", "quantity": 1}]
     s["run"]["stats"] = s["run"]["effective_stats"]
     assert policy.decide(s).command == "fight"
+
+
+def test_regular_kernel_separates_kills_from_draws():
+    from mdp import regular_kernel
+    grid = np.linspace(0, 1.25, 26)
+    rng = np.random.default_rng(5)
+    wall = {"hp": 10**7, "atk": 1, "def": 0, "agi": 0}               # cannot be killed in 15 rounds
+    kill, draw = regular_kernel(BUILD, wall, grid, 64, rng)
+    assert kill.sum() == 0 and np.allclose(draw[1:].sum(axis=1), 1)
+    weak = {"hp": 5, "atk": 1, "def": 0, "agi": 0}
+    kill, draw = regular_kernel(BUILD, weak, grid, 64, rng)
+    assert draw.sum() == 0 and np.allclose(kill[1:].sum(axis=1), 1)

@@ -30,6 +30,13 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
 
 ## Mechanics that matter for an agent
 - **A regular `fight` resolves to the end** (victory or death) in one call → decide fight / flee / heal *before* engaging.
+- **Round caps** (confirmed in the server code):
+  - Regular monsters and elites: at most 15 rounds per fight. A draw makes the monster retreat: no loot,
+    no kill-heal. A rush stops on that floor after a draw.
+  - Extraction gatekeepers: at most 15 rounds per fight. A draw keeps both sides' HP and round count;
+    the fight resumes from there.
+  - Bosses: 4 rounds per `fight`. HP and the cumulative round count carry over; between windows you can
+    use potions, field items and change temp gear. A boss never retreats.
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.
 - Extraction ambush on harder maps (e.g. Zenith 39% from F4) unless the floor's monster was killed.
 - Full combat/drop/monster-growth formulas: `docs/formulas_zh.txt`. Item/map/affix reference: `docs/game_guide_zh.txt`.

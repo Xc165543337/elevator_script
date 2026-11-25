@@ -37,7 +37,7 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 2            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 3            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -137,7 +137,8 @@ class MdpConfig:
     boss_points: int = 11          # boss-HP grid points over (0, 1]
     samples: int = 256             # Monte Carlo fights per grid point
     kernel_stride: int = 4         # regular-fight kernels are shared by this many floors (strongest foe)
-    boss_iterations: int = 60      # value iteration of the stationary boss window (server cap: 60 windows)
+    boss_iterations: int = 60      # value-iteration sweeps of the stationary boss window (convergence
+                                   # limit only: a boss never retreats, the fight goes on until one side dies)
     heal_iterations: int = 8       # heal chains considered per decision (closure depth)
     lambdas: tuple = (0.0, 0.001, 0.003, 0.006, 0.01, 0.02, 0.035, 0.05, 0.075, 0.1, 0.15, 0.25,
                       0.4, 0.7, 1.2, 2.0, 4.0, 10.0)
@@ -191,17 +192,20 @@ def grids(config: MdpConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 # --------------------------------------------------------------------------- kernels
 def regular_kernel(build: Build, foe: dict, grid: np.ndarray, samples: int,
-                   rng: np.random.Generator) -> np.ndarray:
-    """P[i, j]: start at effective HP grid[i], fight a regular enemy to the end (kill, draw or death),
-    land at grid[j]. Rows sum to P(survive); row 0 (dead) is empty."""
+                   rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    """(kill, draw): P[i, j] of starting at effective HP grid[i] and landing at grid[j] after a regular
+    fight that the enemy loses, or that hits the 15-round cap (it retreats; a rush stops there).
+    kill + draw rows sum to P(survive); row 0 (dead) is empty."""
     n = len(grid)
     start = np.repeat(np.arange(1, n), samples)
     e0 = grid[start]
     hp, shield = np.minimum(e0, 1.0) * build.hp, np.maximum(e0 - 1.0, 0.0) * build.hp
-    hp, shield, *_ = fight(build, hp, shield, foe, boss=False, rounds=REGULAR_ROUND_CAP, rng=rng)
-    alive = hp > 0
+    hp, shield, ehp, *_ = fight(build, hp, shield, foe, boss=False, rounds=REGULAR_ROUND_CAP, rng=rng)
     e1 = (hp + shield) / build.hp
-    return _deposit(start[alive], e1[alive], grid, n, 1.0 / samples)
+    killed = (hp > 0) & (ehp <= 0)
+    drawn = (hp > 0) & (ehp > 0)
+    return (_deposit(start[killed], e1[killed], grid, n, 1.0 / samples),
+            _deposit(start[drawn], e1[drawn], grid, n, 1.0 / samples))
 
 
 def boss_kernel(build: Build, foe: dict, window: int, grid: np.ndarray, boss_grid: np.ndarray,
@@ -306,9 +310,9 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     boss_tables: dict[int, np.ndarray] = {}
     # rush continuation: mid[h][j-1] = value about to enter floor h with j floors left (not the first)
     mid = {top + 1: np.zeros((RUSH_FLOORS, nl, n)), top + 2: np.zeros((RUSH_FLOORS, nl, n))}
-    kernels: dict[tuple[str, int], np.ndarray] = {}
+    kernels: dict[tuple[str, int], tuple[np.ndarray, np.ndarray]] = {}
 
-    def kernel(kind: str, floor: int) -> np.ndarray:
+    def kernel(kind: str, floor: int) -> tuple[np.ndarray, np.ndarray]:
         ref = min(top, (floor - 1) // config.kernel_stride * config.kernel_stride + config.kernel_stride)
         key = (kind, ref)
         if key not in kernels:
@@ -323,7 +327,8 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         if is_boss_floor(h):
             return income(h) + boss_start[h]
         mix = floor_mix(h)
-        fought = after @ kernel("normal", h).T
+        killed, drawn = kernel("normal", h)
+        fought = after @ killed.T + ready[h] @ drawn.T          # a draw halts the rush on that floor
         normal = np.where(low, encounter["normal"][h], fought) if stop_low else fought
         value = (mix["normal"] * normal + mix["elite"] * encounter["elite"][h]
                  + mix["choice"] * ready[h] + mix["loot"] * after)
@@ -339,7 +344,8 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         # 3. encounters on g
         for kind in ("normal", "elite"):
             foe = enemy(kind, g, map_id)
-            fight_value = ready[g] @ kernel(kind, g).T
+            killed, drawn = kernel(kind, g)
+            fight_value = ready[g] @ (killed + drawn).T
             fail_at = interp_matrix(np.maximum(grid - flee_hit(build, foe), 0.0), grid)
             p = flee_chance(build, g)
             flee_value = p * ready[g] + (1 - p) * (fight_value @ fail_at.T)
