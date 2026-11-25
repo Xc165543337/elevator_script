@@ -210,6 +210,7 @@ class Farmer:
     def sell_run_loot(self, baseline: set[int]) -> None:
         """Apply the selling rule (see select_loot_to_sell) after a finished run."""
         self.safe_refresh()
+        self.log("selling loot (one call per item; this can take several minutes)")
         earned = sold = 0
         stock = self.client.state.get("warehouse") or []
         for it, qty in select_loot_to_sell(stock, baseline, set(self.args.dedupe_rarities.split(",")),
@@ -333,7 +334,7 @@ class Farmer:
             return
         loadout = parse_loadout(self.args.loadout)
         total_bosses = 0
-        baseline = self.warehouse_ids()
+        session_baseline = baseline = self.warehouse_ids()  # loot already at home is never bulk-sold
         for n in range(1, self.args.runs + 1):
             self.client.refresh()
             if not self.client.state.get("run"):
@@ -363,11 +364,14 @@ class Farmer:
                 self.log(f"resuming run at F{self.client.state['run']['floor']}")
             summary = self.play_run_supervised()
             total_bosses += summary["bosses"]
-            if self.args.mode == "real" and self.args.sell_loot:
-                self.sell_run_loot(baseline)
             self.record(summary)
             self.log(f"run {n} done: F{summary['floor']} bosses {summary['bosses']} steps {summary['steps']} "
                      f"{summary['seconds']}s | {summary['summary']} | total bosses {total_bosses}")
+            if self.args.mode == "real" and self.args.sell_loot == "each":
+                self.sell_run_loot(baseline)
+        if self.args.mode == "real" and self.args.sell_loot == "end":
+            self.log("selling the loot of this session")
+            self.sell_run_loot(session_baseline)
         self.client.refresh()
         self.print_status()
         self.log(f"calibration: k_player={self.cal.k_player:.3f} k_enemy={self.cal.k_enemy:.3f}")
@@ -386,8 +390,9 @@ def main() -> None:
     ap.add_argument("--delay", type=float, default=0.05, help="seconds between API calls")
     ap.add_argument("--balance-gear-score", type=float, default=-1.0,
                     help="wear score for the x2/x2 temp gear (negative = never wear it)")
-    ap.add_argument("--sell-loot", action="store_true",
-                    help="after each real run, sell the loot it brought home (see --sell-rarities)")
+    ap.add_argument("--sell-loot", choices=("off", "end", "each"), default="off",
+                    help="loot selling (one server call per item, slow): off = never; end = once after the "
+                         "last run of this session; each = after every run")
     ap.add_argument("--sell-rarities", default="purple,green,white",
                     help="rarities whose new run loot is sold entirely (blue is kept for rerolls)")
     ap.add_argument("--dedupe-rarities", default="red,gold",

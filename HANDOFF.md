@@ -10,7 +10,7 @@
   - `.gitignore`: `.claude/`. `README.md`: userscript section.
 - Account after games 1-3: 0/4 rainbows, collection 41/48, gold ~61M, 14 free tickets left that day.
 - Game 4 (Mall) was still running at shutdown: F1051, 54 bosses. If the process was stopped, the run stays
-  on the server and expires after 30 min of inactivity; `python farm.py --mode real --runs 1 --sell-loot
+  on the server and expires after 30 min of inactivity; `python farm.py --mode real --runs 1
   --i-understand-real` resumes it.
 
 ## Results (real Mall runs)
@@ -32,7 +32,7 @@
 - Healing exhausted -> extract. Fight still >10% deadly after heals/buffs -> extract.
   Exception: a doll found in the run -> greedy (no extraction), doll saves the bag on death.
 - Safe box: missing collectibles first, then highest-value loot (swap if >=1.2x).
-- Selling (`--sell-loot`): red/gold keep one highest-value unit per item across the warehouse;
+- Selling (`--sell-loot off|end|each`, default off; slow, one call per item): red/gold keep one highest-value unit per item across the warehouse;
   purple/green/white sold only from each new run's loot; blue, supplies, crates, gear kept.
 
 ## Uncommitted fixes in this checkout (after game 4: F1227, 62 bosses, died)

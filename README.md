@@ -43,8 +43,11 @@ of three normal fights is <1% lethal; otherwise it steps one floor at a time.
 - Healing exhausted (no potions, kits or field heals) -> extract at the next safe moment.
 - A fight still >10% deadly after all heals/buffs -> extract instead of fighting.
 - Rush only when 4 back-to-back normal fights (buff-free stats) are <1% deadly; otherwise single-step.
-- With `--sell-loot`: red/gold keep one unit (highest value) per item across the warehouse; purple/green/white
-  from each new run are sold; blue, supplies, crates, gear and pre-existing purple/green/white are kept.
+- Selling is optional and slow (one server call per item, ~10 min for a deep run's loot):
+  `--sell-loot off` (default) | `end` (once after the session's last run) | `each` (after every run);
+  `--sell-now` runs the red/gold pass by hand. Rules: red/gold keep one unit (highest value) per item
+  across the warehouse; purple/green/white from this session's runs are sold; blue, supplies, crates,
+  gear and pre-existing purple/green/white are kept.
 
 ## Components
 
