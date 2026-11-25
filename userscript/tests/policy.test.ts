@@ -181,15 +181,17 @@ it('被拒绝的操作不再重复', () => {
     expect(policy.decide(state).command).not.toBe('field_use')
 })
 
+const KIT = [{ id: 'field_surgery', index: 4, name: '战地手术匣' }]
+
 it('深层低血量时单步前进而不连战', () => {
-    const state = makeState({ hp: 300, controls: ['rush', 'down', 'extract'] })
+    const state = makeState({ hp: 300, bag: KIT, controls: ['rush', 'down', 'extract'] })
     state.run.floor = 1155
     const d = makePolicy().decide(state)
     expect(d.command, d.reason).toBe('down')
 })
 
 it('浅层满血时连战', () => {
-    const state = makeState({ hp: 666, controls: ['rush', 'down', 'extract'] })
+    const state = makeState({ hp: 666, bag: KIT, controls: ['rush', 'down', 'extract'] })
     state.run.floor = 40
     expect(makePolicy().decide(state).command).toBe('rush')
 })
@@ -221,11 +223,64 @@ it('只剩战地手术匣时：楼层间单步，遇敌时使用，有其他回�
         'down'
     )
     const mob = { name: 'mob', hp: 50, atk: 10, def: 2, agi: 5 }
-    const d = makePolicy().decide(makeState({ hp: 250, enemy: mob, bag: kit }))
+    const d = makePolicy().decide(makeState({ hp: 180, enemy: mob, bag: kit }))
     expect(d.command).toBe('use')
     expect(d.params).toEqual({ index: 4 })
+    // 高于使用阈值时，简单战斗直接打，不花手术匣
+    expect(makePolicy().decide(makeState({ hp: 250, enemy: mob, bag: kit })).command).toBe('fight')
     const both = [...kit, { id: 'coffee', index: 5, name: '冰美式' }]
     expect(makePolicy().decide(makeState({ hp: 250, enemy: mob, bag: both })).command).toBe('fight')
+})
+
+it('连战判断忽略会失效的限层增益', () => {
+    const policy = makePolicy()
+    const state = makeState({ hp: 463, bag: KIT, controls: ['rush', 'down', 'extract'] })
+    state.run.floor = 1162
+    state.run.effective_stats = { hp: 670, atk: 276, def: 112, agi: 71, luk: 21 }
+    state.run.field_buffs = []
+    policy.decide(state) // 记住无增益时的属性
+    state.run.effective_stats = { hp: 670, atk: 276, def: 147, agi: 71, luk: 21 }
+    state.run.field_buffs = [{ id: 'field_plate' }] // 临时防御增益生效中
+    expect(policy.lastingBuild(state).defense).toBe(112)
+    expect(policy.decide(state).command).toBe('down') // F1164 阵亡的情形
+})
+
+it('回复手段用完时撤离', () => {
+    const state = makeState({ hp: 600, controls: ['rush', 'down', 'extract'] })
+    state.run.floor = 900
+    expect(makePolicy().decide(state).command).toBe('extract')
+})
+
+it('没有回复时遇到高风险战斗则撤离', () => {
+    const elite = { name: 'elite', elite: true, hp: 2700, atk: 300, def: 90, agi: 55 }
+    const d = makePolicy().decide(makeState({ hp: 300, enemy: elite }))
+    expect(d.command, d.reason).toBe('extract')
+})
+
+it('还有回复时继续前进', () => {
+    const state = makeState({
+        hp: 600,
+        bag: [{ id: 'coffee', index: 2, name: '冰美式' }],
+        controls: ['rush', 'down', 'extract']
+    })
+    state.run.floor = 40
+    expect(makePolicy().decide(state).command).toBe('rush')
+})
+
+it('背包里有替身娃娃时不撤离', () => {
+    const doll = [{ id: 'doll', index: 7, name: '替身娃娃' }]
+    const state = makeState({ hp: 600, bag: doll, controls: ['rush', 'down', 'extract'] })
+    state.run.floor = 900
+    expect(makePolicy().decide(state).command).not.toBe('extract') // 没有回复，但有娃娃：继续
+    const elite = { name: 'elite', elite: true, hp: 2700, atk: 300, def: 90, agi: 55 }
+    expect(makePolicy().decide(makeState({ hp: 300, enemy: elite, bag: doll })).command).toBe('fight')
+})
+
+it('默认不使用扩容袋', () => {
+    const state = makeState({ hp: 666, bag: [...KIT, { id: 'pouch', index: 3, name: '扩容袋' }], controls: ['rush'] })
+    state.run.floor = 40
+    expect(makePolicy().decide(state).command).toBe('rush')
+    expect(makePolicy({ usePouch: true }).decide(state).params).toEqual({ index: 3 })
 })
 
 describe('临装选择', () => {

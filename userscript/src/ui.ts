@@ -156,7 +156,8 @@ export function mountPanel(): void {
     const stopAfterBtn = h('button', { disabled: true, title: '打完当前这一局后停止' }, '本局后停止')
     const stopNowBtn = h('button', { disabled: true, title: '当前请求返回后立即停下，对局保留在服务器上' }, '立即暂停')
     const statusBtn = h('button', { title: '读取图鉴、金币与门票' }, '查看状态')
-    const buttons = h('div', { className: 'row' }, startBtn, stopAfterBtn, stopNowBtn, statusBtn)
+    const dedupeBtn = h('button', { title: '按「每种只留一件」规则出售仓库里重复的红 / 金物品（不开局）' }, '仓库去重')
+    const buttons = h('div', { className: 'row' }, startBtn, stopAfterBtn, stopNowBtn, statusBtn, dedupeBtn)
 
     // ---------------------------------------------------------------- 设置表单
     const form = h('div', { className: 'form' })
@@ -298,15 +299,17 @@ export function mountPanel(): void {
         dot.classList.toggle('on', on)
         startBtn.disabled = on
         statusBtn.disabled = on
+        dedupeBtn.disabled = on
         stopAfterBtn.disabled = !on
         stopNowBtn.disabled = !on
         for (const el of inputs) (el as HTMLInputElement).disabled = on
         if (!on) liveCells.state.textContent = '空闲'
     }
 
-    async function launch(statusOnly: boolean): Promise<void> {
+    async function launch(action: 'farm' | 'status' | 'dedupe'): Promise<void> {
         const s = settings
-        if (!statusOnly) {
+        const statusOnly = action === 'status'
+        if (action === 'farm') {
             try {
                 parseLoadout(s.loadout)
             } catch (err) {
@@ -314,6 +317,16 @@ export function mountPanel(): void {
                 return
             }
             if (s.mode === 'real' && !confirmReal(s)) return
+        }
+        if (action === 'dedupe') {
+            const rarities = s.dedupeRarities.trim()
+            if (!rarities) return log('「每种只留一件的稀有度」为空，没有要去重的物品', 'warn')
+            const ok = confirm(
+                `将出售仓库中稀有度为 ${rarities} 的重复物品：每种只保留价值最高的一件，其余全部出售。\n\n确定吗？`
+            )
+            if (!ok) return
+        }
+        if (!statusOnly) {
             if (!lock.acquire()) {
                 log('另一个标签页正在运行脚本：请先在那边停止，或关闭那个标签页后等待 3 分钟。', 'error')
                 return
@@ -324,7 +337,7 @@ export function mountPanel(): void {
         setRunning(true)
         const beat = statusOnly ? undefined : setInterval(() => lock.beat(), 20_000)
         try {
-            await current.run(statusOnly)
+            await current.run(action)
         } catch (err) {
             console.error('[elevator-farmer]', err)
         } finally {
@@ -334,8 +347,9 @@ export function mountPanel(): void {
         }
     }
 
-    startBtn.addEventListener('click', () => void launch(false))
-    statusBtn.addEventListener('click', () => void launch(true))
+    startBtn.addEventListener('click', () => void launch('farm'))
+    statusBtn.addEventListener('click', () => void launch('status'))
+    dedupeBtn.addEventListener('click', () => void launch('dedupe'))
     stopAfterBtn.addEventListener('click', () => {
         farmer?.requestStopAfterRun()
         stopAfterBtn.disabled = true

@@ -82,6 +82,10 @@ export interface PolicyConfig {
     maxBossWindowRisk: number
     /** 资源耗尽且高于此风险：撤离而不是硬打 */
     abortRisk: number
+    /** 回复手段全部用完：在下一个安全时机撤离 */
+    extractWhenDry: boolean
+    /** 背包里有替身娃娃（死亡时保住本局与背包）：继续深入刷首领，不撤离 */
+    greedyWithDoll: boolean
     /** 低于此 HP 比例：回血或逐层前进 */
     rushMinHp: number
     /** 可选的硬性上限（到达即撤离） */
@@ -95,14 +99,18 @@ export interface PolicyConfig {
     maxRushRisk: number
     /** 安全箱满时，战利品价值 ≥ 倍数 × 箱内最便宜物品才替换 */
     swapMargin: number
-    /** 开局使用哆啦的临时扩容袋（安全箱 +1 格） */
+    /** 开局使用哆啦的临时扩容袋（安全箱 +1 格）；扩容袋珍贵，默认不用（捡到的带回家） */
     usePouch: boolean
+    /** 只剩战斗专用回复时，HP 低于此比例才在遭遇中使用 */
+    combatTopupHp: number
 }
 
 export const DEFAULT_POLICY: PolicyConfig = {
     maxDeathRisk: 0.02,
     maxBossWindowRisk: 0.03,
-    abortRisk: 0.35,
+    abortRisk: 0.1,
+    extractWhenDry: true,
+    greedyWithDoll: true,
     rushMinHp: 0.55,
     maxFloor: null,
     balanceGearScore: -1.0,
@@ -110,7 +118,8 @@ export const DEFAULT_POLICY: PolicyConfig = {
     startAdrenaline: 2,
     maxRushRisk: 0.01,
     swapMargin: 1.2,
-    usePouch: true
+    usePouch: false,
+    combatTopupHp: 0.3
 }
 
 export interface Decision {
@@ -176,6 +185,8 @@ export class BossFarmPolicy {
     eventAtkCapped = false
     adrenalineUsed = 0
     pouchUsed = false
+    /** 最近一次没有限层增益时看到的实时属性 */
+    baseStats: Json = null
     affixBuild: Build | null = null
     loadoutKey: string | null = null
 
@@ -191,6 +202,7 @@ export class BossFarmPolicy {
         this.eventAtkCapped = false
         this.adrenalineUsed = 0
         this.pouchUsed = false
+        this.baseStats = null
     }
 
     /** 响应服务器的限制提示 */
@@ -219,6 +231,26 @@ export class BossFarmPolicy {
             this.loadoutKey = loadout
         }
         return runBuild(state, this.affixBuild)
+    }
+
+    /**
+     * 不含限层增益的 Build（连战跨越多层时增益可能中途失效）。
+     * 使用最近一次没有此类增益时观测到的实时属性。
+     */
+    lastingBuild(state: Json): Build {
+        const run = state.run
+        if (!(run.field_buffs || []).length) this.baseStats = { ...run.effective_stats }
+        const build = this.currentBuild(state)
+        const base = this.baseStats
+        if (!isEmpty(base)) {
+            return {
+                ...build,
+                atk: Math.min(build.atk, base.atk),
+                defense: Math.min(build.defense, base.def),
+                agi: Math.min(build.agi, base.agi)
+            }
+        }
+        return build
     }
 
     estimate(state: Json): FightEstimate {
@@ -290,7 +322,7 @@ export class BossFarmPolicy {
      * 以便恢复连战，而不是在几场简单战斗里慢慢掉血。
      */
     private combatOnlyTopup(run: Json): Decision | null {
-        if (run.hp >= this.cfg.rushMinHp * run.max_hp || BossFarmPolicy.bagHeals(run, false).length) return null
+        if (run.hp >= this.cfg.combatTopupHp * run.max_hp || BossFarmPolicy.bagHeals(run, false).length) return null
         const floor = run.floor
         const kits = BossFarmPolicy.bagHeals(run, true)
             .map(([, it]) => it)
@@ -465,7 +497,8 @@ export class BossFarmPolicy {
         if (grenade && est.death > limit) {
             return decision('use', { index: grenade.index }, `${tag}：手雷（死亡 ${pct(est.death, 1)}）`, est)
         }
-        if (est.death > this.cfg.abortRisk) {
+        const dry = this.cfg.extractWhenDry && !this.hasHealing(run)
+        if (!this.greedy(run) && (est.death > this.cfg.abortRisk || (dry && est.death > limit))) {
             if (ctr.has('extract'))
                 return decision('extract', {}, `${tag}：死亡 ${pct(est.death, 1)}，资源耗尽 → 撤离`, est)
             const smoke = BossFarmPolicy.bagItem(run, 'smoke')
@@ -569,10 +602,22 @@ export class BossFarmPolicy {
         return score
     }
 
+    /** 本局捡到的替身娃娃会在死亡时把背包带回家，因此永远不需要撤离 */
+    greedy(run: Json): boolean {
+        return this.cfg.greedyWithDoll && BossFarmPolicy.bagItem(run, 'doll') !== null
+    }
+
+    hasHealing(run: Json): boolean {
+        return BossFarmPolicy.fieldHeals(run).length > 0 || BossFarmPolicy.bagHeals(run, true).length > 0
+    }
+
     private advance(state: Json, ctr: Map<string, Json>): Decision {
         const run = state.run
         if (this.cfg.maxFloor && run.floor >= this.cfg.maxFloor && ctr.has('extract')) {
             return decision('extract', {}, `已到最高层 ${this.cfg.maxFloor}`)
+        }
+        if (this.cfg.extractWhenDry && ctr.has('extract') && !this.hasHealing(run) && !this.greedy(run)) {
+            return decision('extract', {}, '回复手段已用完 → 撤离，带回背包')
         }
         const hpFrac = run.hp / run.max_hp
         const heal = this.bestHeal(run, false, false)
@@ -587,7 +632,7 @@ export class BossFarmPolicy {
             }
         }
         if (ctr.has('rush')) {
-            const risk = chainRisk(this.currentBuild(state), state, this.cal, 4, this.cfg.samples, run.map || 'mall')
+            const risk = chainRisk(this.lastingBuild(state), state, this.cal, 4, this.cfg.samples, run.map || 'mall')
             if (risk <= this.cfg.maxRushRisk) return decision('rush', {}, `连战（连续风险 ${pct(risk, 1)}）`)
             const forced = this.bestHeal(run, false, true)
             if (forced && hpFrac < 0.95) return { ...forced, reason: `连战风险 ${pct(risk, 1)} → ${forced.reason}` }

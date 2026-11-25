@@ -50,6 +50,13 @@ describe('设置', () => {
         expect(s.delay).toBe(0.2)
         expect('extra' in s).toBe(false)
     })
+
+    it('旧版默认携带物资升级为新默认值，用户改过的保持不变', () => {
+        const old = 'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'
+        expect(normalizeSettings({ loadout: old }).loadout).toBe(DEFAULT_SETTINGS.loadout)
+        expect(DEFAULT_SETTINGS.loadout).not.toMatch(/pouch|doll/)
+        expect(normalizeSettings({ loadout: 'coffee=5' }).loadout).toBe('coffee=5')
+    })
 })
 
 // ---------------------------------------------------------------------------
@@ -71,16 +78,22 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
             secondary: { crit_multiplier: 1.9, pierce: 0.26, leech: 0.06 }
         },
         atlas: { known: 1, total: 2, items: [], rainbow: [{ name: '虹彩之证', unlocked: false }] },
+        warehouse: [
+            { stock_id: 1, id: 'g01', name: '金', kind: 'collection', rarity: 'gold', value: 5000, quantity: 1 },
+            { stock_id: 2, id: 'g01', name: '金', kind: 'collection', rarity: 'gold', value: 7000, quantity: 1 },
+            { stock_id: 3, id: 'p01', name: '紫', kind: 'material', rarity: 'purple', value: 800, quantity: 4 }
+        ],
         run: null,
         controls: []
     }
+    const sold: Json[] = []
     const runControls = (floor: number) =>
         (floor >= 21 ? ['extract'] : ['rush', 'down', 'extract']).map(c => ({ command: c, params: {}, label: c }))
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 
     const fetch: FetchLike = async (url, init) => {
         if (url.endsWith('/game/state')) return json({ state, sync_token: `t${rev}` })
-        const { command } = JSON.parse(String(init.body))
+        const { command, params } = JSON.parse(String(init.body))
         if (cooldownPending && command === 'rush') {
             cooldownPending = false
             return json({ error: { code: 'cooldown', message: '操作太快' } }, 429)
@@ -97,7 +110,7 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
                 simulation: true,
                 effective_stats: { hp: 666, atk: 150, def: 70, agi: 77, luk: 21 },
                 event: { kind: 'ready' },
-                bag: [],
+                bag: [{ id: 'coffee', index: 1, name: '冰美式' }], // 还有回复：不会因「回复用完」提前撤离
                 safe: [],
                 safe_capacity: 4,
                 field: [],
@@ -115,6 +128,9 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         } else if (command === 'extract') {
             state.run = null
             result = { outcome: 'extracted', summary: '撤离成功' }
+        } else if (command === 'sell') {
+            sold.push(params)
+            state.warehouse = state.warehouse.filter((it: Json) => it.stock_id !== params.stock_id)
         } else {
             return json({ error: { code: 'invalid', message: `未知命令 ${command}` } }, 400)
         }
@@ -123,7 +139,7 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         state.controls = state.run ? runControls(state.run.floor) : []
         return json({ result, state, sync_token: `t${rev}` })
     }
-    return { fetch, commands, state }
+    return { fetch, commands, state, sold }
 }
 
 function makeFarmer(server: ReturnType<typeof fakeServer>, settings: Partial<Settings> = {}) {
@@ -157,6 +173,14 @@ describe('完整流程（假服务器）', () => {
             rainbows: ['虹彩之证']
         })
         expect(farmer.trace).toHaveLength(6)
+    })
+
+    it('仓库去重：只卖重复的红 / 金，不开局、不卖紫色', async () => {
+        const server = fakeServer()
+        const { farmer } = makeFarmer(server, { mode: 'real' })
+        await farmer.run('dedupe')
+        expect(server.sold).toEqual([{ stock_id: 1, quantity: 1 }])
+        expect(server.commands).toEqual(['sell'])
     })
 
     it('「立即暂停」：停在当前步骤，对局保留', async () => {

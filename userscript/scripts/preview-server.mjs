@@ -55,6 +55,11 @@ const state = {
             { name: '棱镜残片', unlocked: true }
         ]
     },
+    warehouse: [
+        { stock_id: 11, id: 'g01', name: '鎏金怀表', kind: 'collection', rarity: 'gold', value: 5000, quantity: 1 },
+        { stock_id: 12, id: 'g01', name: '鎏金怀表', kind: 'collection', rarity: 'gold', value: 7000, quantity: 2 },
+        { stock_id: 13, id: 'p01', name: '紫色零件', kind: 'material', rarity: 'purple', value: 800, quantity: 4 }
+    ],
     run: null,
     controls: []
 }
@@ -62,7 +67,7 @@ const state = {
 const ctl = names => names.map(c => ({ command: c, params: {}, label: c }))
 const boss = { name: '商场守夜人', boss: true, hp: 520, atk: 48, def: 9, agi: 12, rounds_fought: 0 }
 
-function command(name) {
+function command(name, params) {
     let result = { outcome: 'ongoing', summary: '' }
     const run = state.run
     if (name === 'simulate') {
@@ -75,7 +80,7 @@ function command(name) {
             simulation: true,
             effective_stats: { hp: 666, atk: 150, def: 70, agi: 77, luk: 21 },
             event: { kind: 'ready' },
-            bag: [],
+            bag: [{ id: 'coffee', index: 1, name: '冰美式续命液', healing: true }],
             safe: [],
             safe_capacity: 4,
             field: [],
@@ -105,6 +110,12 @@ function command(name) {
         result = { outcome: 'extracted', summary: '撤离成功' }
     } else if (name === 'rush_settings') {
         result.summary = '已设置'
+    } else if (name === 'sell') {
+        const it = state.warehouse.find(w => w.stock_id === params?.stock_id)
+        if (!it) return { status: 400, body: { error: { code: 'invalid', message: '没有该物品' } } }
+        it.quantity -= params.quantity
+        state.warehouse = state.warehouse.filter(w => w.quantity > 0)
+        result.summary = `出售 ${it.name} × ${params.quantity}`
     } else {
         return { status: 400, body: { error: { code: 'invalid', message: `不能执行 ${name}` } } }
     }
@@ -147,8 +158,8 @@ createServer((req, res) => {
         let raw = ''
         req.on('data', c => (raw += c))
         req.on('end', () => {
-            const { command: name } = JSON.parse(raw || '{}')
-            const out = command(name)
+            const { command: name, params } = JSON.parse(raw || '{}')
+            const out = command(name, params)
             setTimeout(() => send(out.status, out.body), 250)
         })
         return

@@ -38,6 +38,14 @@ buffs, 2 temp-gear slots, 2 grenades per boss. Two balance gears = x4 damage tak
 Rush auto-fights normal monsters without healing, so deep down the agent only rushes when a chain
 of three normal fights is <1% lethal; otherwise it steps one floor at a time.
 
+## Run & selling rules
+
+- Healing exhausted (no potions, kits or field heals) -> extract at the next safe moment.
+- A fight still >10% deadly after all heals/buffs -> extract instead of fighting.
+- Rush only when 4 back-to-back normal fights (buff-free stats) are <1% deadly; otherwise single-step.
+- With `--sell-loot`: red/gold keep one unit (highest value) per item across the warehouse; purple/green/white
+  from each new run are sold; blue, supplies, crates, gear and pre-existing purple/green/white are kept.
+
 ## Components
 
 | File | Role |

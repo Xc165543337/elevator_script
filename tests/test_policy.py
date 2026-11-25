@@ -140,15 +140,18 @@ def test_affixes_do_not_stack():
     assert (build.hp, build.atk, build.defense, build.agi) == (594, 123, 138, 61)
 
 
+KIT = [{"id": "field_surgery", "index": 4, "name": "战地手术匣"}]
+
+
 def test_deep_low_hp_steps_instead_of_rushing():
-    state = make_state(hp=300, controls=("rush", "down", "extract"))
+    state = make_state(hp=300, bag=KIT, controls=("rush", "down", "extract"))
     state["run"]["floor"] = 1155
     decision = make_policy().decide(state)
     assert decision.command == "down", decision.reason
 
 
 def test_shallow_full_hp_rushes():
-    state = make_state(hp=666, controls=("rush", "down", "extract"))
+    state = make_state(hp=666, bag=KIT, controls=("rush", "down", "extract"))
     state["run"]["floor"] = 40
     assert make_policy().decide(state).command == "rush"
 
@@ -196,8 +199,50 @@ def test_steps_and_uses_surgery_when_it_is_the_only_heal():
     assert make_policy().decide(state).command == "down"
     # in an (easy) encounter: use the kit now so rushing can resume
     mob = {"name": "mob", "hp": 50, "atk": 10, "def": 2, "agi": 5}
-    d = make_policy().decide(make_state(hp=250, enemy=mob, bag=kit))
+    d = make_policy().decide(make_state(hp=180, enemy=mob, bag=kit))
     assert d.command == "use" and d.params == {"index": 4}
+    # above the top-up threshold an easy fight is taken without spending a kit
+    assert make_policy().decide(make_state(hp=250, enemy=mob, bag=kit)).command == "fight"
     # with a non-combat heal available, the kit is saved
     both = kit + [{"id": "coffee", "index": 5, "name": "冰美式"}]
     assert make_policy().decide(make_state(hp=250, enemy=mob, bag=both)).command == "fight"
+
+
+def test_rush_check_ignores_expiring_buffs():
+    policy = make_policy()
+    state = make_state(hp=463, bag=KIT, controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 1162
+    state["run"]["effective_stats"] = {"hp": 670, "atk": 276, "def": 112, "agi": 71, "luk": 21}
+    state["run"]["field_buffs"] = []
+    policy.decide(state)                                   # remembers buff-free stats
+    state["run"]["effective_stats"] = {"hp": 670, "atk": 276, "def": 147, "agi": 71, "luk": 21}
+    state["run"]["field_buffs"] = [{"id": "field_plate"}]  # temporary DEF buff now active
+    assert policy.lasting_build(state).defense == 112
+    assert policy.decide(state).command == "down"           # the F1164 death situation
+
+
+def test_extracts_when_healing_is_exhausted():
+    state = make_state(hp=600, controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 900
+    assert make_policy().decide(state).command == "extract"
+
+
+def test_extracts_from_risky_fight_with_no_heals_left():
+    elite = {"name": "elite", "elite": True, "hp": 2700, "atk": 300, "def": 90, "agi": 55}
+    d = make_policy().decide(make_state(hp=300, enemy=elite))
+    assert d.command == "extract", d.reason
+
+
+def test_keeps_going_while_heals_remain():
+    state = make_state(hp=600, bag=[{"id": "coffee", "index": 2, "name": "冰美式"}], controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 40
+    assert make_policy().decide(state).command == "rush"
+
+
+def test_doll_makes_the_agent_greedy():
+    doll = [{"id": "doll", "index": 7, "name": "替身娃娃"}]
+    state = make_state(hp=600, bag=doll, controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 900
+    assert make_policy().decide(state).command != "extract"          # dry but doll: keep going
+    elite = {"name": "elite", "elite": True, "hp": 2700, "atk": 300, "def": 90, "agi": 55}
+    assert make_policy().decide(make_state(hp=300, enemy=elite, bag=doll)).command == "fight"

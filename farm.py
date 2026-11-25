@@ -26,7 +26,8 @@ from policy import BossFarmPolicy, PolicyConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
-DEFAULT_LOADOUT = "adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2"
+DEFAULT_LOADOUT = ("adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,"
+                   "critical_serum=50,field_surgery=50")  # healing + adrenaline only; doll/pouch are kept at home
 TICKET_PRICE = 350
 
 
@@ -324,6 +325,10 @@ class Farmer:
         self.print_status()
         if self.args.status:
             return
+        if self.args.sell_now:  # red/gold dedupe across the warehouse only (no run loot to sell)
+            self.sell_run_loot(self.warehouse_ids())
+            self.print_status()
+            return
         loadout = parse_loadout(self.args.loadout)
         total_bosses = 0
         baseline = self.warehouse_ids()
@@ -385,10 +390,14 @@ def main() -> None:
                     help="rarities whose new run loot is sold entirely (blue is kept for rerolls)")
     ap.add_argument("--dedupe-rarities", default="red,gold",
                     help="rarities reduced to one unit (the highest-valued) per item across the warehouse")
+    ap.add_argument("--sell-now", action="store_true",
+                    help="apply the red/gold one-copy rule to the warehouse now, then exit (requires --mode real)")
     ap.add_argument("--status", action="store_true", help="print collection status and exit")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--i-understand-real", action="store_true", help="required for --mode real")
     args = ap.parse_args()
+    if args.sell_now and args.mode != "real":
+        sys.exit("--sell-now needs --mode real --i-understand-real")
     if args.mode == "real" and not args.i_understand_real and not args.status:
         sys.exit("Real mode spends tickets and gold. Re-run with --i-understand-real to confirm.")
     Farmer(args).run()

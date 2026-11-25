@@ -9,7 +9,7 @@ It never mutates the state and is safe to unit-test against recorded states.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from combat import Calibration, FightEstimate, chain_risk, estimate, run_build
 from gear import GearModel
@@ -39,7 +39,9 @@ WEAR_WEIGHTS = {"攻击": 1.0, "防御": 0.7, "减伤": 1.3, "闪避率": 1.5, "
 class PolicyConfig:
     max_death_risk: float = 0.02        # accepted P(death) for a regular fight
     max_boss_window_risk: float = 0.03  # accepted P(death) within one boss window
-    abort_risk: float = 0.35            # above this with no resources left: extract instead of fighting
+    abort_risk: float = 0.10            # above this with no resources left: extract instead of fighting
+    extract_when_dry: bool = True       # no healing left at all -> extract at the next safe moment
+    greedy_with_doll: bool = True       # a 替身娃娃 in the bag saves run+bag on death: keep pushing for bosses
     rush_min_hp: float = 0.55           # below this HP fraction, heal or step floor-by-floor
     max_floor: int | None = None        # optional hard stop (extract on reaching it)
     balance_gear_score: float = -1.0    # score for 策划的平衡性调整 (x2 dealt / x2 taken); <0 = never wear
@@ -47,7 +49,8 @@ class PolicyConfig:
     start_adrenaline: int = 2           # 暴走肾上腺素 shots to use on F1 (max 2 stacks)
     max_rush_risk: float = 0.01         # max P(death) over 4 back-to-back normal fights to allow a rush
     swap_margin: float = 1.2            # swap loot into a full safe box only if worth >= margin x cheapest secured
-    use_pouch: bool = True              # use 哆啦的临时扩容袋 (+1 safe-box slot) early in the run
+    use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
+    combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
 
 
 @dataclass
@@ -76,6 +79,7 @@ class BossFarmPolicy:
         self.event_atk_capped = False   # server reported the +60% event attack cap this run
         self.adrenaline_used = 0
         self.pouch_used = False
+        self._base_stats: dict | None = None   # effective stats last seen with no floor-limited buffs
         self._affix_build: Build | None = None
         self._loadout: tuple | None = None
 
@@ -84,6 +88,7 @@ class BossFarmPolicy:
         self.event_atk_capped = False
         self.adrenaline_used = 0
         self.pouch_used = False
+        self._base_stats = None
 
     def note(self, notices: list[str]) -> None:
         """React to server limit notices."""
@@ -107,6 +112,19 @@ class BossFarmPolicy:
             gm = GearModel(state)
             self._affix_build, self._loadout = gm.build(gm.current), loadout
         return run_build(state, self._affix_build)
+
+    def lasting_build(self, state: dict) -> Build:
+        """Build without floor-limited buffs (they can expire during a multi-floor rush).
+        Uses the effective stats last observed while no such buff was active."""
+        run = state["run"]
+        if not (run.get("field_buffs") or []):
+            self._base_stats = dict(run["effective_stats"])
+        build = self.current_build(state)
+        base = self._base_stats
+        if base:
+            build = replace(build, atk=min(build.atk, base["atk"]), defense=min(build.defense, base["def"]),
+                            agi=min(build.agi, base["agi"]))
+        return build
 
     def estimate(self, state: dict) -> FightEstimate:
         return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples)
@@ -166,7 +184,7 @@ class BossFarmPolicy:
     def _combat_only_topup(self, run: dict) -> Decision | None:
         """Low HP and only combat-only heals (战地手术匣) left: use one now, during an encounter,
         so the run can go back to rushing instead of bleeding out over several easy fights."""
-        if run["hp"] >= self.cfg.rush_min_hp * run["max_hp"] or self._bag_heals(run, in_combat=False):
+        if run["hp"] >= self.cfg.combat_topup_hp * run["max_hp"] or self._bag_heals(run, in_combat=False):
             return None
         floor = run["floor"]
         kits = [it for heal, it in self._bag_heals(run, in_combat=True)
@@ -331,7 +349,8 @@ class BossFarmPolicy:
         grenade = self._bag_item(run, "grenade")
         if grenade and est.death > limit:
             return Decision("use", {"index": grenade["index"]}, f"{tag}: grenade (death {est.death:.1%})", est)
-        if est.death > self.cfg.abort_risk:
+        dry = self.cfg.extract_when_dry and not self.has_healing(run)
+        if not self.greedy(run) and (est.death > self.cfg.abort_risk or (dry and est.death > limit)):
             if "extract" in ctr:
                 return Decision("extract", {}, f"{tag}: death {est.death:.1%}, no resources -> extract", est)
             smoke = self._bag_item(run, "smoke")
@@ -418,10 +437,19 @@ class BossFarmPolicy:
             score += weight * float(value)
         return score
 
+    def greedy(self, run: dict) -> bool:
+        """A doll found during the run brings the bag home on death, so extraction is never needed."""
+        return self.cfg.greedy_with_doll and self._bag_item(run, "doll") is not None
+
+    def has_healing(self, run: dict) -> bool:
+        return bool(self._field_heals(run) or self._bag_heals(run, in_combat=True))
+
     def _advance(self, state: dict, ctr: dict) -> Decision:
         run = state["run"]
         if self.cfg.max_floor and run["floor"] >= self.cfg.max_floor and "extract" in ctr:
             return Decision("extract", {}, f"reached max floor {self.cfg.max_floor}")
+        if self.cfg.extract_when_dry and "extract" in ctr and not self.has_healing(run) and not self.greedy(run):
+            return Decision("extract", {}, "healing exhausted -> extract and bank the bag")
         hp_frac = run["hp"] / run["max_hp"]
         heal = self._best_heal(run, in_combat=False, force=False)
         if heal and (hp_frac < self.cfg.rush_min_hp or heal.command == "field_use"):
@@ -435,7 +463,7 @@ class BossFarmPolicy:
                 why = "only combat-only heals left" if combat_only else "no heals"
                 return Decision("down", {}, f"low HP {hp_frac:.0%}, {why}: single step so an encounter allows healing")
         if "rush" in ctr:
-            risk = chain_risk(self.current_build(state), state, self.cal, samples=self.cfg.samples,
+            risk = chain_risk(self.lasting_build(state), state, self.cal, samples=self.cfg.samples,
                               map_id=run.get("map") or "mall")
             if risk <= self.cfg.max_rush_risk:
                 return Decision("rush", {}, f"rush (chain risk {risk:.1%})")

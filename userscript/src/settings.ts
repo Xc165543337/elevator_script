@@ -11,7 +11,9 @@ export const MAPS: [string, string][] = [
     ['zenith', '天顶']
 ]
 
-export const DEFAULT_LOADOUT = 'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'
+/** 只带回复与肾上腺素；替身娃娃与扩容袋留在家里 */
+export const DEFAULT_LOADOUT =
+    'adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,critical_serum=50,field_surgery=50'
 
 export interface Settings {
     /** sim = 练习（免费、无收益）；real = 正式（消耗门票与金币） */
@@ -50,6 +52,9 @@ export const DEFAULT_SETTINGS: Settings = {
     verbose: false
 }
 
+/** 旧版本的默认携带物资：保存的值仍是旧默认值（用户没改过）时换成新默认值 */
+const OLD_DEFAULT_LOADOUTS = new Set(['adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'])
+
 /** 合并已保存的设置，丢弃类型不符的字段（旧版本或手动改坏的数据） */
 export function normalizeSettings(saved: unknown): Settings {
     const out: Settings = { ...DEFAULT_SETTINGS }
@@ -69,6 +74,7 @@ export function normalizeSettings(saved: unknown): Settings {
             ;(out as unknown as Record<string, unknown>)[key] = value
         }
     }
+    if (OLD_DEFAULT_LOADOUTS.has(out.loadout)) out.loadout = DEFAULT_LOADOUT
     return out
 }
 

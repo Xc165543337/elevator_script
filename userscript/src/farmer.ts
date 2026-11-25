@@ -5,6 +5,7 @@
 // 与 Python 版不同：不登录（沿用页面会话），记录保存在浏览器中，可随时暂停。
 // ============================================================================
 
+import DEFAULT_CALIBRATION from '../../calibration.json'
 import { Calibration } from './combat.ts'
 import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
@@ -125,7 +126,8 @@ export class Farmer {
         private readonly heartbeat: () => void = () => {}
     ) {
         this.client = client ?? new ElevatorClient()
-        this.cal = new Calibration(load<Partial<CalibrationData>>('calibration', {}))
+        // 浏览器中尚无校准数据时，从 Python 版的 calibration.json 起步（构建时打包进脚本）
+        this.cal = new Calibration(load<Partial<CalibrationData>>('calibration', DEFAULT_CALIBRATION))
         this.policy = new BossFarmPolicy(this.cal, {
             maxFloor: settings.maxFloor,
             balanceGearScore: settings.balanceGearScore
@@ -382,7 +384,7 @@ export class Farmer {
             sold += qty
             earned += (it.value || 0) * qty
         }
-        this.log(`出售 ${sold} 件本局物品（约 ${int(earned)} 金币）`)
+        this.log(`出售 ${sold} 件物品（约 ${int(earned)} 金币）`)
     }
 
     private async ensureRushSettings(): Promise<void> {
@@ -525,13 +527,23 @@ export class Farmer {
     }
 
     // ------------------------------------------------------------- 主流程
-    async run(statusOnly = false): Promise<void> {
+    /**
+     * farm：按设置刷首领；status：只显示状态；
+     * dedupe：只对仓库执行「每种只留一件」规则（不出售战利品、不开局），对应 Python 版 --sell-now。
+     */
+    async run(action: 'farm' | 'status' | 'dedupe' = 'farm'): Promise<void> {
         const s = this.settings
         this.emit({ running: true, mode: s.mode, run: 0, runs: s.runs })
         try {
             await this.client.refresh()
             this.printStatus()
-            if (statusOnly) return
+            if (action === 'status') return
+            if (action === 'dedupe') {
+                // 以当前仓库为基准：整批出售规则不会命中任何条目，只做红 / 金去重
+                await this.sellRunLoot(this.warehouseIds())
+                this.printStatus()
+                return
+            }
             const loadout = parseLoadout(s.loadout)
             let totalBosses = 0
             let baseline = this.warehouseIds()
