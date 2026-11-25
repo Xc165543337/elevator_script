@@ -122,3 +122,11 @@ def test_battle_enemy_applies_the_depth_shred():
     state = {"player": {"secondary": {"condition": {"depth_shred": 0.25}}}}
     assert battle_enemy(state, {"def": 80, "hp": 5})["def"] == 60
     assert battle_enemy({"player": {}}, {"def": 80})["def"] == 80
+
+
+def test_depth_shred_matches_the_live_values():
+    from model import depth_shred
+    assert depth_shred(50, 0.6) == 0
+    assert depth_shred(51, 0.6) == pytest.approx(0.0069767441860465115)
+    assert depth_shred(63, 0.6) == pytest.approx(0.07959183673469387)
+    assert depth_shred(5000, 0.6) < 0.6 and depth_shred(900, 0.0) == 0

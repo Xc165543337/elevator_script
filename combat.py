@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 import heirlooms
-from model import BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, enemy, fight, fight_segment
+from model import BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, fight, fight_segment, foe_at
 
 BERSERK_CAP = 0.75
 
@@ -111,7 +111,8 @@ def run_build(state: dict, affix_build: Build) -> Build:
     es = run["effective_stats"]
     mult = float(run.get("damage_multiplier") or 1)
     reduction = float(sec["mitigation"]) if sec.get("mitigation") is not None else affix_build.reduction
-    affix_build = replace(affix_build, **heirlooms.build_effects(state.get("heirlooms")))
+    affix_build = replace(affix_build, **heirlooms.build_effects(state.get("heirlooms")),
+                          depth_shred_cap=float((sec.get("condition") or {}).get("depth_cap") or 0.0))
     return replace(affix_build, hp=run["max_hp"], atk=es["atk"], defense=es["def"], agi=es["agi"], luk=es["luk"],
                    reduction=reduction,
                    pierce=sec.get("pierce") or affix_build.pierce, leech=sec.get("leech") or affix_build.leech,
@@ -160,6 +161,6 @@ def chain_risk(build: Build, state: dict, cal: Calibration, fights: int = 4, sam
     hp = np.full(samples, float(run["hp"]))
     shield = np.full(samples, float(run.get("shield") or 0))
     for k in range(1, fights + 1):
-        hp, shield, *_ = fight(tuned, hp, shield, enemy("normal", run["floor"] + k, map_id), boss=False, rng=rng)
+        hp, shield, *_ = fight(tuned, hp, shield, foe_at("normal", run["floor"] + k, map_id, tuned), boss=False, rng=rng)
         hp = np.where(hp <= 0, -1.0, hp)  # dead samples stay dead
     return float((hp <= 0).mean())

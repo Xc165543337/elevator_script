@@ -34,7 +34,7 @@ from typing import Callable
 import numpy as np
 
 from model import (BOSS_WINDOW, LIVE_RULES, REGULAR_ROUND_CAP, Build, ServerRules, enemy, fight, floor_mix,
-                   is_boss_floor)
+                   foe_at, is_boss_floor)
 
 E_MAX = 1.25                 # effective HP cap: full HP plus the 25% shield of a barrier serum
 BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ramp); 4+ is stationary
@@ -369,14 +369,14 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         key = (kind, reference(floor))
         if key not in kernels:
             rounds = rules.elite_round_cap if kind == "elite" else REGULAR_ROUND_CAP
-            kernels[key] = regular_kernel(build, enemy(kind, key[1], map_id), grid, config.samples, rng, rounds)
+            kernels[key] = regular_kernel(build, foe_at(kind, key[1], map_id, build), grid, config.samples, rng, rounds)
         return kernels[key]
 
     def elite_kernels(floor: int) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray]:
         """((cont, kill) of the rounds before the pause from a fresh elite, pause lands)."""
         key = ("elite_pause", reference(floor))
         if key not in kernels:
-            foe = enemy("elite", key[1], map_id)
+            foe = foe_at("elite", key[1], map_id, build)
             first = segment_kernel(build, foe, boss=False, start_round=1, rounds=rules.elite_break, grid=grid,
                                    enemy_grid=boss_grid, samples=config.samples, rng=rng, fresh=True)
             kernels[key] = first, elite_pause_kernel(build, foe, grid, boss_grid, config.pause_samples, rng, rules)
@@ -423,7 +423,7 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             encounter[kind][g] = any_heal(np.maximum(np.maximum(fight_value, flee_value), smoke_value))
         # 4. boss on g
         if is_boss_floor(g):
-            boss_tables[g] = _solve_boss(build, enemy("boss", g, map_id), grid, boss_grid, lambdas,
+            boss_tables[g] = _solve_boss(build, foe_at("boss", g, map_id, build), grid, boss_grid, lambdas,
                                          1.0 + ready[g] @ full, any_heal, config, rng)
             boss_start[g] = boss_tables[g][0][:, :, -1]
         # 5. single-step arrival on g

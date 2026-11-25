@@ -124,6 +124,24 @@ def enemy(kind: str, floor: int, map_id: str = "mall") -> dict:
     return {k: math.floor(v) for k, v in out.items()}
 
 
+DEPTH_SHRED_FROM, DEPTH_SHRED_HALF = 50, 85
+
+
+def depth_shred(floor: int, cap: float) -> float:
+    """Blessings' deep-floor armour shred (本层祝福深层破甲): cap * d / (d + 85), d = floors below F50.
+    Fitted exactly on the live `secondary.condition.depth_shred` (F51 0.00698, F63 0.0796 at cap 0.6).
+    It multiplies with pierce: effective defence = def * (1 - shred) * (1 - pierce)."""
+    d = max(0, floor - DEPTH_SHRED_FROM)
+    return cap * d / (d + DEPTH_SHRED_HALF)
+
+
+def foe_at(kind: str, floor: int, map_id: str, build: "Build") -> dict:
+    """enemy() as the damage formula sees it for this build: defence after the depth shred."""
+    foe = enemy(kind, floor, map_id)
+    shred = depth_shred(floor, build.depth_shred_cap)
+    return {**foe, "def": foe["def"] * (1 - shred)} if shred else foe
+
+
 @dataclass(frozen=True)
 class Build:
     """Everything that matters in combat. Rates are fractions (0.26 = 26%)."""
@@ -158,6 +176,7 @@ class Build:
     burst_sure: bool = False    # charged attacks cannot be dodged
     pierce_cap: float = 0.75    # B06 缺刻值夜表 2 pieces: +12 pp above the cap (87%)
     beat: bool = False          # B06 4 pieces (抢拍): rounds 4, 8, ... the player acts first and takes x0.65
+    depth_shred_cap: float = 0.0  # worn blessings: enemy defence shred from F50 on, up to this (see depth_shred)
     label: str = ""
 
     @property
