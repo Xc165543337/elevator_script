@@ -136,7 +136,7 @@ def _deposit(start: np.ndarray, x: np.ndarray, grid: np.ndarray, n_start: int, w
 # --------------------------------------------------------------------------- config & tables
 @dataclass(frozen=True)
 class MdpConfig:
-    max_floor: int = 2600          # values beyond are 0 (no run has come close)
+    max_floor: int = 4000          # values beyond are 0; the full B06 set makes F2000+ reachable
     hp_points: int = 51            # effective-HP grid points over [0, E_MAX]
     boss_points: int = 11          # boss-HP grid points over (0, 1]
     samples: int = 256             # Monte Carlo fights per grid point

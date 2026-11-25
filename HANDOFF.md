@@ -41,7 +41,7 @@
 - After game 4 (F1227, 62 bosses, died): collection 44/48 -> only the 4 rainbows remain.
 
 ## Markov decision process policy (2026-11-25, branch `fix/round-cap-and-lasting-leech`)
-- `mdp.py`: run MDP (floor x effective HP x decision point), backward induction F2600 -> F1, heal budget
+- `mdp.py`: run MDP (floor x effective HP x decision point), backward induction F4000 -> F1, heal budget
   priced with a Lagrange multiplier (18 prices solved at once). ~65 s per build, cached in `cache/`.
 - `markov_policy.py`: `MarkovPolicy` = BossFarmPolicy + MDP decisions for heal / fight / flee / rush / step,
   live fight simulation against the actual enemy, field buffs / grenades / buff pairs valued in bosses.

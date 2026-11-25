@@ -109,7 +109,7 @@ mismatch is logged as a warning).
 The run is modelled as a Markov decision process: state = floor, effective HP (HP + shield) and the
 decision point (between floors / normal or elite waiting / boss window); actions = heal with a given
 item, fight, flee, single step, rush; reward = +1 per boss kill. Transitions come from the combat model
-(`model.py`) and the server's encounter odds; the tables are solved backward from F2600 (~1 min, then
+(`model.py`) and the server's encounter odds; the tables are solved backward from F4000 (~3 min, then
 cached per build). The heal stock is a run-long budget: instead of tracking the full inventory, each
 heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
 that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
