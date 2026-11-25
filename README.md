@@ -79,6 +79,9 @@ ELEVATOR_USER=your_account_or_qq
 ELEVATOR_PASS=your_password
 ```
 
+Instead of `.env`, the same variables can come from the environment (e.g. a cloud environment);
+`ELEVATOR_PASSWORD` is accepted as an alias of `ELEVATOR_PASS`.
+
 ## Usage
 
 ```bash

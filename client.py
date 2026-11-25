@@ -76,7 +76,7 @@ class ElevatorClient:
     def login(self, username: str | None = None, password: str | None = None) -> dict:
         _load_dotenv()
         username = username or os.environ["ELEVATOR_USER"]
-        password = password or os.environ["ELEVATOR_PASS"]
+        password = password or os.environ.get("ELEVATOR_PASS") or os.environ["ELEVATOR_PASSWORD"]
         return self._call("/auth/login", {"username": username, "password": password, "remember": True})
 
     # -- game ------------------------------------------------------------
