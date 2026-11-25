@@ -85,6 +85,18 @@
 - Confirmed live: elite pause state (`rounds_fought` 8, enemy HP kept), rush stop `精英中场`, encounter
   odds 41/12/13/34, rush settings can be changed during a run.
 
+## Real runs with the full B06 set (2026-11-25 14:00-15:52)
+- Run 1 (Markov, full loadout, pursuit B08 + B03): 111 bosses by F2150 under the agent, F2110 at 106.
+  The model expected ~39 more bosses at F1010 (vs ~4.6 before the set): 抢拍 and the deep-floor shred
+  (fitted: 0.6 x d / (d + 85), d = floor - 50) make deep floors far easier. Shining: B08 4/4, B03 1/4.
+- At the F2150 boss the agent picked the wish (为了我所期待的), which would have wiped 23.5M of run loot.
+  The margin came from heal costs (~14 windows of full heals), not risk: from full HP a window cannot
+  kill (worst ~638 of 702). The user healed through manually and reached F2176. The wish now requires
+  the segment to stay >= 5% deadly after the best heal at hand, and its loot limit follows the 10M relic
+  threshold.
+- Live API details learned: the wish preview (token) comes in the command result, not the state; the
+  server can return HTTP 502 while redeploying (the agent now waits it out).
+
 ## Live run with the Markov policy (how to start)
 - Credentials: the cloud environment now has `ELEVATOR_USER` and `ELEVATOR_PASSWORD` (accepted as alias of
   `ELEVATOR_PASS`). They are loaded only in sessions started after they were added.

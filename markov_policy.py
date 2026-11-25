@@ -49,10 +49,12 @@ class MarkovConfig:
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
     pause_samples: int = 48         # live fights per (hp, elite hp) point when valuing the elite pause
     # 为了我所期待的 (one per run at F500, 0.1% per floor): kills the current enemy, wipes this run's loot.
-    # Used when it adds this share of the value at stake over the best alternative (~ the death risk it
-    # removes), so it stays in the bag for a real emergency.
+    # Only for a real emergency: the coming fight segment must stay at least wish_min_death deadly even
+    # after the best heal at hand (a boss that cannot kill from full HP in one window is healed through,
+    # not wished away), and the wish must add wish_gain of the value at stake over the best alternative.
     wish_gain: float = 0.15
-    wish_max_loot: int = 100_000_000   # never wipe more run loot than this (bag + safe box) with a wish
+    wish_min_death: float = 0.05
+    wish_max_loot: int | None = None   # never wipe more run loot than this; None = PolicyConfig.relic_loot_value
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
     cache_dir: str = "cache"
     mdp: MdpConfig = field(default_factory=MdpConfig)
@@ -375,7 +377,8 @@ class MarkovPolicy(BossFarmPolicy):
 
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, heals)
         q_smoke = float(np.interp(e, grid, tables.ready[g][li])) - mu if smoke is not None else -np.inf
-        if self._wish_ready(state):
+        healed = max([e, *(float(o.item.apply(np.array([e]), max_hp)[0]) for o in heals)])
+        if self._wish_ready(state) and float(np.interp(healed, grid, death_curve)) >= self.mcfg.wish_min_death:
             ready = tables.ready[g][li]
             q_wish = 1.0 + float(np.interp(1.0, grid, ready)) if boss else float(np.interp(e, grid, ready))
             q_other = max(q_base, q_heal, q_prep, q_smoke)
@@ -398,7 +401,7 @@ class MarkovPolicy(BossFarmPolicy):
 
     def _wish_ready(self, state: dict) -> bool:
         """A wish in the field stash, and nothing it would wipe that matters: no still-missing collectible,
-        no looted relic bag being banked, and less than wish_max_loot of loot in the bag and safe box."""
+        no looted relic bag being banked, and less loot in the bag and safe box than the wish loot limit."""
         run = state["run"]
         if not any(it.get("id") == WISH and (it.get("quantity") or 0) > 0 for it in run.get("field") or []):
             return False
@@ -408,7 +411,8 @@ class MarkovPolicy(BossFarmPolicy):
         if any(it.get("id") in self.missing_collectibles(state) for it in held):
             return False
         loot = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in held if it.get("id") not in KEEP_IN_BAG)
-        return loot < self.mcfg.wish_max_loot and not self.banking
+        limit = self.cfg.relic_loot_value if self.mcfg.wish_max_loot is None else self.mcfg.wish_max_loot
+        return loot < limit and not self.banking
 
     def _decide(self, state: dict) -> Decision:
         sent, self._wish_sent = self._wish_sent, False

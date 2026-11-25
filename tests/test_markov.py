@@ -341,3 +341,11 @@ def test_wish_is_not_requested_again_when_no_preview_comes_back(policy):
     s = _wish_state(60)
     assert policy.decide(s).params == {"id": "field_wish"}
     assert policy.decide(s).params != {"id": "field_wish"}            # no preview in the state: banned on this floor
+
+
+def test_wish_is_not_used_when_a_full_heal_makes_the_window_safe(policy):
+    policy.missing_collectibles = lambda _state: set()
+    s = _wish_state(60)
+    s["run"]["bag"] = bag_of("field_surgery")                       # heals to full in combat
+    s["controls"].append({"command": "use", "params": {}, "label": "use"})
+    assert policy.decide(s).params != {"id": "field_wish"}
