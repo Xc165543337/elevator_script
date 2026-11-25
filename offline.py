@@ -11,7 +11,7 @@ live server (some later patches are missing), so treat results as a comparison b
 as a forecast of live numbers.
 
     python offline.py --engine ../longniang-qqbot --runs 10 --policies threshold,markov
-    python offline.py --engine ../longniang-qqbot --runs 10 --loadout "$(python -c 'import farm; print(farm.DEFAULT_LOADOUT)'),smoke=50"
+    python offline.py --engine ../longniang-qqbot --runs 10 --loadout "adrenaline=2,field_surgery=50,coffee=30"
 """
 from __future__ import annotations
 

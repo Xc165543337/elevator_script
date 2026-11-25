@@ -24,12 +24,14 @@ import requests
 from client import ElevatorClient, GameError
 from combat import Calibration
 from markov_policy import MarkovConfig, MarkovPolicy
-from policy import BossFarmPolicy, PolicyConfig
+from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(HERE, "logs")
-DEFAULT_LOADOUT = ("adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,"
-                   "critical_serum=50,field_surgery=50")  # healing + adrenaline only; doll/pouch are kept at home
+MAX_CARRY = 50   # live server limit per supply in one start request
+# Every shop heal and smokes at the carry limit, plus the two adrenaline shots the policy uses on F1.
+# Craft-only supplies (grenade, shield) would spend materials, and doll / pouch are kept at home.
+DEFAULT_LOADOUT = ",".join(["adrenaline=2", *(f"{item}={MAX_CARRY}" for item in (*SUPPLY_HEAL, "smoke"))])
 TICKET_PRICE = 350
 
 

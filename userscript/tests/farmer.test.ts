@@ -52,8 +52,13 @@ describe('设置', () => {
     })
 
     it('旧版默认携带物资升级为新默认值，用户改过的保持不变', () => {
-        const old = 'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'
-        expect(normalizeSettings({ loadout: old }).loadout).toBe(DEFAULT_SETTINGS.loadout)
+        for (const old of [
+            'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2',
+            'adrenaline=2,ice_tea=50,coffee=50,triage_vial=50,slow_serum=50,barrier_serum=50,critical_serum=50,field_surgery=50'
+        ])
+            expect(normalizeSettings({ loadout: old }).loadout).toBe(DEFAULT_SETTINGS.loadout)
+        expect(DEFAULT_SETTINGS.loadout).toMatch(/field_surgery=50/)
+        expect(DEFAULT_SETTINGS.loadout).toMatch(/smoke=50/)
         expect(DEFAULT_SETTINGS.loadout).not.toMatch(/pouch|doll/)
         expect(normalizeSettings({ loadout: 'coffee=5' }).loadout).toBe('coffee=5')
     })

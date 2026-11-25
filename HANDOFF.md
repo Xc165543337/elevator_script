@@ -24,7 +24,7 @@
 
 ## Current rules (all in code)
 - Gear: keep current loadout (#1839, #11655, #5522, #12248). Affixes do not stack (verified); no rerolls.
-- Loadout: 2 adrenaline (+50% ATK cap) + 50 each of the 7 shop heals. Never bring doll or pouch;
+- Loadout: 2 adrenaline (+50% ATK cap) + 50 (the live per-supply carry limit) each of the 7 shop heals and smoke bombs. Never bring doll or pouch;
   never open pouches found in a run.
 - Temp gear: aprons preferred; skip the x2/x2 balance gear.
 - Rush only if 4 back-to-back normal fights (buff-free stats) are <1% deadly; else single step.
