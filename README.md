@@ -118,7 +118,7 @@ that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences wor
   banking still extracts; `MarkovConfig.extract_below` re-enables value-based extraction.
 - A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
   the encounter instead.
-- Rush is chosen while it gives up at most `rush_tolerance` (0.02) expected bosses against single steps.
+- Rush is chosen while it gives up at most `rush_tolerance` (0.002) expected bosses against single steps.
 - Elites under live rules are two segments: the first 8 rounds are valued with the best heals at the
   pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
   solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.

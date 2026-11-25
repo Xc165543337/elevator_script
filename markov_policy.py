@@ -36,7 +36,9 @@ from policy import BossFarmPolicy, Decision, PolicyConfig
 @dataclass
 class MarkovConfig:
     from_floor: int = 30            # shallower floors are trivial and the build is still ramping up
-    rush_tolerance: float = 0.02    # expected bosses a rush may give up against single steps
+    # expected bosses a rush may give up against single steps; it is paid on every rush of the run, so it
+    # only absorbs Monte Carlo noise (0.02 let a two-fight rush at 3.6% death risk through at F1205 live)
+    rush_tolerance: float = 0.002
     heal_margin: float = 0.002      # a heal / flee must beat the alternative by this many bosses
     prep_margin: float = 0.01       # a field buff / grenade (no budget price) must gain this many bosses
     prep_pairs: int = 3             # best single preparations combined pairwise (buff + buff synergies)

@@ -76,7 +76,16 @@
   not regenerated: the Python fight engine has moved on (field-item build fields, follow-up order) and the
   TS port has not, which a regenerated fixture exposes (2 failing parity tests). Separate follow-up.
 
-## Live run with the Markov policy (not started yet)
+## First live run with the Markov policy (2026-11-25 13:26-13:53)
+- Resumed the user's real Mall run at F616 (restarted once at F685 to pick up fixes). 29 bosses
+  (F630-F1190), died at F1207 in a rush: a F1206 normal left 382/700 HP (above the 50% rush stop), the
+  F1207 normal won with 34 HP left. Model: 3.6% death for that two-fight rush, 16.8% from 382 HP;
+  rush 1.15 vs step 1.16 was inside rush_tolerance 0.02, now 0.002. ~45 heal units were left unused.
+- Shining drops: 缺齿校时轮 x2, 早一秒交班条 -> B06 缺刻值夜表 4/4 collected (none worn yet).
+- Confirmed live: elite pause state (`rounds_fought` 8, enemy HP kept), rush stop `精英中场`, encounter
+  odds 41/12/13/34, rush settings can be changed during a run.
+
+## Live run with the Markov policy (how to start)
 - Credentials: the cloud environment now has `ELEVATOR_USER` and `ELEVATOR_PASSWORD` (accepted as alias of
   `ELEVATOR_PASS`). They are loaded only in sessions started after they were added.
 - One active run per account: make sure no other agent (e.g. the local Windows machine) is playing,
