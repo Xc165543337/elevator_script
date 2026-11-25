@@ -407,9 +407,13 @@ export class Farmer {
         for (const [key, field, want, required] of wanted) {
             if ((required || field in player) && player[field] !== want) change[key] = want
         }
-        if (Object.keys(change).length) {
+        if (!Object.keys(change).length) return
+        try {
             await this.call('rush_settings', change)
             this.log(`连战设置已调整：${JSON.stringify(change)}`)
+        } catch (err) {
+            if (!(err instanceof GameError)) throw err
+            this.log(`无法调整连战设置（${err.message}）`, 'warn') // 例如对局中不允许修改
         }
     }
 
@@ -649,6 +653,7 @@ export class Farmer {
                         )
                         break
                     }
+                    await this.ensureRushSettings()
                     this.focus = isSim ? null : (this.pursuit() ?? null)
                     this.tally = this.freshTally()
                     this.log(`继续 F${this.client.state.run.floor} 的进行中对局`)

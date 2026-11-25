@@ -258,9 +258,13 @@ class Farmer:
         player = self.client.state["player"]
         change = {key: want for key, (field, want, required) in RUSH_SETTINGS.items()
                   if (required or field in player) and player.get(field) != want}
-        if change:
+        if not change:
+            return
+        try:
             self.call("rush_settings", change)
             self.log(f"rush settings changed: {change}")
+        except GameError as err:   # e.g. a server that refuses changes during a run
+            self.log(f"could not change rush settings {change}: {err}")
 
     # ------------------------------------------------------------- run loop
     def pursuit(self) -> list[str] | None:
@@ -446,6 +450,7 @@ class Farmer:
                         if (self.client.state.get("heirlooms") or {}).get("needs_focus"):
                             self.log(f"this run still needs its blessing choice: {err}")
                             break
+                self.ensure_rush_settings()
                 self.reset_tally()
                 self.log(f"resuming run at F{self.client.state['run']['floor']}")
             summary = self.play_run_supervised()
