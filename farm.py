@@ -91,6 +91,7 @@ class Farmer:
         self.client = client or ElevatorClient()
         self.cal = Calibration.load(os.path.join(HERE, "calibration.json"))
         config = PolicyConfig(max_floor=args.max_floor, balance_gear_score=args.balance_gear_score,
+                              relic_loot_value=args.relic_loot_value,
                               rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
         if args.policy == "markov":
             self.policy = MarkovPolicy(self.cal, config, MarkovConfig(cache_dir=os.path.join(HERE, "cache")),
@@ -481,6 +482,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--focus", default=None,
                     help="real runs: the two blessing sets to pursue (追寻), by number or id, e.g. 1,8; "
                          "default: the pair chosen last time")
+    ap.add_argument("--relic-loot-value", type=int, default=PolicyConfig.relic_loot_value,
+                    help="loot (舔包) fallen players' bags worth at least this much gold instead of returning them "
+                         "for the bounty; loot that valuable which the safe box cannot hold is banked by extracting")
     ap.add_argument("--rules", choices=("live", "legacy"), default="live",
                     help="server rules: live = elites pause after round 8 of 16 and the current encounter odds "
                          "(server since 2026-11-25); legacy = the older engine of the public bot repository (offline.py)")

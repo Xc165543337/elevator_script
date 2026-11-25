@@ -52,6 +52,9 @@ class PolicyConfig:
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
     rules: ServerRules = LIVE_RULES     # rules of the server being played (offline engine: LEGACY_RULES)
+    relic_loot_value: int = 100_000_000  # loot (舔包) a fallen player's bag worth at least this instead of
+                                         # returning it for the bounty (捞尸); loot this valuable that the safe box
+                                         # cannot hold is then banked by extracting
 
 
 @dataclass
@@ -65,6 +68,15 @@ class Decision:
 def _pct(text: str, pattern: str) -> float:
     m = re.search(pattern, text)
     return float(m.group(1)) / 100 if m else 0.0
+
+
+_RELIC_VALUE = re.compile(r"估值\s*([\d,]+)\s*金")
+
+
+def relic_value(event: dict) -> int:
+    """Gold value of a fallen player's bag, from the event text ("…遗落的物资，估值 1,234 金。")."""
+    m = _RELIC_VALUE.search(f"{event.get('text') or ''} {event.get('description') or ''}")
+    return int(m.group(1).replace(",", "")) if m else 0
 
 
 def _controls(state: dict) -> dict[str, dict]:
@@ -260,8 +272,11 @@ class BossFarmPolicy:
             return self._fight(state, ctr)
         if event.get("kind") == "choice" and any(c["command"] == "event" for c in state.get("controls") or []):
             return self._choice(state)
-        if "rescue" in ctr:
-            return Decision("rescue", ctr["rescue"].get("params", {}), "return fallen player's relic")
+        if event.get("kind") == "relic" and ("rob" in ctr or "rescue" in ctr):
+            return self._relic(event, ctr)
+        bank = self._bank_loot(run, ctr)
+        if bank:
+            return bank
         if "down" in ctr or "rush" in ctr:
             return self._advance(state, ctr)
         if "leave" in ctr:
@@ -305,6 +320,29 @@ class BossFarmPolicy:
             return Decision("save_box", {"index": item["index"]}, f"secure missing collectible {item['name']}")
         if "extract" in ctr and not (run.get("event") or {}).get("enemy"):
             return Decision("extract", {}, f"safe box full; extract to bank {item['name']}")
+        return None
+
+    def _relic(self, event: dict, ctr: dict) -> Decision:
+        """A fallen player's bag: loot it when it is worth relic_loot_value, otherwise return it for the
+        bounty (paid at once, nothing to carry out)."""
+        value = relic_value(event)
+        if value >= self.cfg.relic_loot_value and "rob" in ctr:
+            return Decision("rob", ctr["rob"].get("params", {}),
+                            f"loot fallen player's bag worth {value:,} (>= {self.cfg.relic_loot_value:,})")
+        if "rescue" in ctr:
+            return Decision("rescue", ctr["rescue"].get("params", {}),
+                            f"return fallen player's bag ({value:,}) for the bounty")
+        return Decision("leave", {}, "fallen player's bag: nothing to do")
+
+    def _bank_loot(self, run: dict, ctr: dict) -> Decision | None:
+        """Extract once loot worth relic_loot_value sits in the bag, outside the safe box (lost on death).
+        Runs after _secure_loot, so only what the safe box cannot hold counts."""
+        if (run.get("event") or {}).get("enemy") or "extract" not in ctr:
+            return None
+        exposed = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in run.get("bag") or []
+                      if it.get("can_protect") and it.get("id") not in KEEP_IN_BAG)
+        if exposed >= self.cfg.relic_loot_value:
+            return Decision("extract", {}, f"bank {exposed:,.0f} of loot the safe box cannot hold")
         return None
 
     def _secure_loot(self, state: dict) -> Decision | None:

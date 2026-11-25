@@ -301,3 +301,33 @@ def test_refused_adrenaline_ends_the_shots_for_the_run():
     p.ban(616, Decision("use", {"index": 26}), item_id="adrenaline",
           message="肾上腺素最多把本局攻击加成叠到 +50%，这针已保留。")
     assert p.adrenaline_used == p.cfg.start_adrenaline
+
+
+def _relic_state(value, bag=(), safe=(), capacity=4):
+    return {"run": {"floor": 900, "hp": 700, "max_hp": 700, "bag": list(bag), "safe": list(safe), "safe_capacity": capacity,
+                    "event": {"kind": "relic", "name": "遗物盒", "text": f"某人 遗落的物资，估值 {value:,} 金。"},
+                    "effective_stats": {"hp": 700, "atk": 150, "def": 70, "agi": 77, "luk": 21}},
+            "player": {"loadout": {}, "secondary": {}},
+            "controls": [{"command": c, "params": {}, "label": c} for c in ("rob", "rescue", "leave", "extract")],
+            "atlas": {"items": []}}
+
+
+def test_loots_a_bag_worth_the_threshold_and_returns_cheaper_ones():
+    p = BossFarmPolicy(CAL)
+    p.missing_collectibles = lambda _state: set()
+    assert p.decide(_relic_state(150_000_000)).command == "rob"
+    assert p.decide(_relic_state(40_000_000)).command == "rescue"
+
+
+def test_extracts_when_the_safe_box_cannot_hold_valuable_loot():
+    p = BossFarmPolicy(CAL)
+    p.missing_collectibles = lambda _state: set()
+    loot = [{"id": f"g{i}", "index": i + 1, "name": f"g{i}", "value": 30_000_000, "can_protect": True} for i in range(5)]
+    safe = [{"id": "s", "index": k + 1, "name": "s", "value": 60_000_000} for k in range(4)]
+    s = _relic_state(0, bag=loot, safe=safe)
+    s["run"]["event"] = {"kind": "ready"}
+    s["controls"] = [{"command": c, "params": {}, "label": c} for c in ("down", "rush", "extract")]
+    assert p.decide(s).command == "extract"
+    coffee = {"id": "coffee", "index": 9, "name": "coffee", "quantity": 5, "value": 300, "can_protect": True}
+    s["run"]["bag"] = [*loot[:2], coffee]                            # 60M exposed: keep farming
+    assert p._bank_loot(s["run"], {"extract": {}}) is None
