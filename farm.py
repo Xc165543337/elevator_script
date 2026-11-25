@@ -144,6 +144,20 @@ class Farmer:
             self.log(f"refresh failed ({err})")
             return False
 
+    def connect(self, attempts: int = 30, wait: float = 60.0) -> None:
+        """Log in and load the state, waiting out a server that is restarting (HTTP 502 and the like).
+        Game errors such as wrong credentials are raised at once."""
+        for attempt in range(1, attempts + 1):
+            try:
+                self.client.login()
+                self.client.refresh()
+                return
+            except (requests.RequestException, ValueError) as err:
+                if attempt == attempts:
+                    raise
+                self.log(f"server unavailable ({err}); retrying in {wait:.0f}s")
+                time.sleep(wait)
+
     def play_run_supervised(self, retries: int = 10) -> dict:
         """play_run, resuming the same run after transient server/network failures."""
         for attempt in range(retries + 1):
@@ -404,8 +418,7 @@ class Farmer:
 
     # ------------------------------------------------------------- main
     def run(self) -> None:
-        self.client.login()
-        self.client.refresh()
+        self.connect()
         self.print_status()
         if self.args.status:
             return
@@ -417,7 +430,8 @@ class Farmer:
         total_bosses = 0
         session_baseline = baseline = self.warehouse_ids()  # loot already at home is never bulk-sold
         for n in range(1, self.args.runs + 1):
-            self.client.refresh()
+            while not self.safe_refresh():   # between runs too, a restarting server is waited out
+                time.sleep(30)
             if not self.client.state.get("run"):
                 if self.args.mode == "real":
                     if all(self.rainbow_status().values()):

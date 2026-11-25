@@ -130,3 +130,23 @@ def test_depth_shred_matches_the_live_values():
     assert depth_shred(51, 0.6) == pytest.approx(0.0069767441860465115)
     assert depth_shred(63, 0.6) == pytest.approx(0.07959183673469387)
     assert depth_shred(5000, 0.6) < 0.6 and depth_shred(900, 0.0) == 0
+
+
+def test_connect_waits_out_a_restarting_server(tmp_path):
+    import requests
+
+    class Flaky(RecordingClient):
+        calls = 0
+
+        def login(self):
+            Flaky.calls += 1
+            if Flaky.calls < 3:
+                raise requests.ConnectionError("non-JSON response (HTTP 502)")
+
+        def refresh(self):
+            return self.state
+
+    args = build_parser().parse_args(["--delay", "0", "--log-dir", str(tmp_path)])
+    farmer = Farmer(args, client=Flaky({}))
+    farmer.connect(attempts=5, wait=0)
+    assert Flaky.calls == 3
