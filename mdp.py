@@ -145,8 +145,10 @@ class MdpConfig:
                                    # limit only: a boss never retreats, the fight goes on until one side dies)
     heal_iterations: int = 8       # heal chains considered per decision (closure depth)
     lambdas: tuple = (0.0, 0.01, 0.05, 0.15, 0.5, 10.0)
-    # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left)
-    smoke_prices: tuple = (0.0, 0.1, 0.3, 1.0, 1000.0)
+    # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left). Dense where the
+    # dual bound turns: a smoke saves roughly the heal price of the HP a deep fight costs (0.03-0.1); with
+    # (0, 0.1, ...) a stock of 50 still priced at 0.1, and live runs ended with most smokes unused.
+    smoke_prices: tuple = (0.0, 0.03, 0.05, 0.07, 0.1, 1000.0)
     pause_samples: int = 96        # Monte Carlo fights per (hp, elite hp) point of the elite-pause kernel
     rules: ServerRules = LIVE_RULES
     seed: int = 0
