@@ -269,7 +269,9 @@ class Farmer:
                 if err.code != "invalid":
                     raise
                 self.log(f"F{floor} rejected {decision.command} {decision.params}: {err}; choosing again")
-                self.policy.ban(floor, decision)
+                used = next((it.get("id") for it in run.get("bag") or []
+                             if decision.command == "use" and it.get("index") == decision.params.get("index")), None)
+                self.policy.ban(floor, decision, item_id=used, message=str(err))
                 self.client.refresh()
                 continue
             t["steps"] += 1

@@ -261,3 +261,13 @@ def test_rush_check_ignores_temporary_leech():
     state["run"]["floor"] = 1225
     state["player"]["secondary"]["leech"] = 0.28          # 6% set + 22% 虹吸滴管 buff
     assert policy.lasting_build(state).leech == AFFIXES.leech
+
+
+def test_active_slow_heal_blocks_every_copy():
+    bag = [{"id": "slow_serum", "index": i, "name": "缓释再生液"} for i in (24, 25, 26)]
+    policy = make_policy()
+    state = make_state(hp=300, bag=bag, controls=("rush", "down", "extract"))
+    first = policy.decide(state)
+    assert first.command == "use" and first.params == {"index": 24}
+    policy.ban(state["run"]["floor"], first, item_id="slow_serum", message="上一次缓释治疗还在生效。")
+    assert policy.decide(state).command != "use"     # no retry with the other copies

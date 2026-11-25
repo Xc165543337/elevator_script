@@ -77,6 +77,7 @@ class BossFarmPolicy:
         # (floor, command, params) tuples the server rejected; never proposed again on that floor.
         self.banned: set[tuple] = set()
         self.event_atk_capped = False   # server reported the +60% event attack cap this run
+        self.blocked_until: dict[str, int] = {}  # item id -> last floor it is blocked (e.g. slow heal active)
         self.adrenaline_used = 0
         self.pouch_used = False
         self._base_stats: dict | None = None   # effective stats last seen with no floor-limited buffs
@@ -89,6 +90,7 @@ class BossFarmPolicy:
         self.adrenaline_used = 0
         self.pouch_used = False
         self._base_stats = None
+        self.blocked_until = {}
 
     def note(self, notices: list[str]) -> None:
         """React to server limit notices."""
@@ -98,8 +100,13 @@ class BossFarmPolicy:
             if "扩容袋" in text:
                 self.pouch_used = True
 
-    def ban(self, floor: int, decision: "Decision") -> None:
+    def ban(self, floor: int, decision: "Decision", item_id: str | None = None, message: str = "") -> None:
         self.banned.add((floor, decision.command, repr(sorted(decision.params.items()))))
+        if item_id and "还在生效" in message:  # e.g. 缓释再生液 still healing: every copy is refused
+            self.blocked_until[item_id] = floor + 3
+
+    def _item_blocked(self, run: dict, item_id: str) -> bool:
+        return run["floor"] <= self.blocked_until.get(item_id, -1)
 
     def _allowed(self, floor: int, command: str, params: dict) -> bool:
         return (floor, command, repr(sorted(params.items()))) not in self.banned
@@ -172,7 +179,7 @@ class BossFarmPolicy:
             heal, item = max(fitting, key=lambda x: x[0]) if fitting else min(field_heals, key=lambda x: x[0])
             return Decision("field_use", {"id": item["id"]}, f"field heal {item['name']} (+{heal:.0%}, deficit {deficit:.0%})")
         bag = [(h, it) for h, it in self._bag_heals(run, in_combat)
-               if self._allowed(floor, "use", {"index": it["index"]})]
+               if self._allowed(floor, "use", {"index": it["index"]}) and not self._item_blocked(run, it["id"])]
         if not bag:
             return None
         fitting = [(h, it) for h, it in bag if h <= deficit + 0.10]
