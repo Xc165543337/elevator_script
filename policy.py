@@ -125,17 +125,21 @@ class BossFarmPolicy:
 
     def lasting_build(self, state: dict) -> Build:
         """Build without floor-limited buffs (they can expire during a multi-floor rush).
-        Uses the effective stats and damage reduction last observed while no such buff was active, and only the permanent
-        leech / follow-up / boss bonus from gear (buffs such as 虹吸滴管 +22% leech expire)."""
+        Uses the effective stats and damage reduction last observed while no such buff was active: as they
+        are while the worn field gear is unchanged (buffs can also lower a stat, e.g. 清仓红牌 defence -20%),
+        otherwise as a cap. Leech / follow-up / boss bonus come from the permanent gear only (buffs such as
+        虹吸滴管 +22% leech expire)."""
         run = state["run"]
         build = self.current_build(state)
+        worn = tuple((slot or {}).get("id") for slot in run.get("field_slots") or [])
         if not (run.get("field_buffs") or []):
-            self._base_stats = {**run["effective_stats"], "reduction": build.reduction}
+            self._base_stats = {**run["effective_stats"], "reduction": build.reduction, "worn": worn}
         base = self._base_stats
-        if base:
+        if base and base.get("worn") == worn:
+            build = replace(build, atk=base["atk"], defense=base["def"], agi=base["agi"], reduction=base["reduction"])
+        elif base:   # worn gear changed under a buff: the old values only bound the lasting ones
             build = replace(build, atk=min(build.atk, base["atk"]), defense=min(build.defense, base["def"]),
-                            agi=min(build.agi, base["agi"]),
-                            reduction=min(build.reduction, base.get("reduction", build.reduction)))
+                            agi=min(build.agi, base["agi"]), reduction=min(build.reduction, base["reduction"]))
         perm = self._affix_build
         return replace(build, leech=min(build.leech, perm.leech), combo=min(build.combo, perm.combo),
                        boss_bonus=min(build.boss_bonus, perm.boss_bonus))

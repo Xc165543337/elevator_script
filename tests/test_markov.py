@@ -300,3 +300,12 @@ def test_fresh_elite_risk_covers_the_rounds_before_the_pause():
 def test_policy_rules_reach_the_solver(tmp_path, legacy_tables):
     p = make_policy(legacy_tables, tmp_path, LEGACY_RULES)
     assert p.mcfg.mdp.rules == LEGACY_RULES
+
+
+def test_lasting_build_ignores_a_buff_that_lowers_a_stat(policy):
+    calm = state(hp=666)
+    policy.lasting_build(calm)
+    buffed = state(hp=666)
+    buffed["run"]["field_buffs"] = [{"id": "field_clearance", "left": 2}]      # 清仓红牌: defence -20%
+    buffed["run"]["effective_stats"] = {**calm["run"]["effective_stats"], "def": BUILD.defense * 0.8}
+    assert policy.lasting_build(buffed).defense == BUILD.defense
