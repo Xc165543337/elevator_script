@@ -86,6 +86,10 @@ def heal_stock(run: dict) -> float:
     return total
 
 
+def smoke_count(run: dict) -> int:
+    return sum(it.get("quantity") or 1 for it in run.get("bag") or [] if it.get("id") == "smoke")
+
+
 def effective_hp(run: dict) -> float:
     return (run["hp"] + (run.get("shield") or 0)) / run["max_hp"]
 
@@ -274,9 +278,9 @@ class MarkovPolicy(BossFarmPolicy):
         return value, death
 
     def _encounter(self, state: dict, ctr: dict, tables: ValueTables) -> Decision:
-        """Heal / field buff / grenade / flee / fight, whichever gives the most expected bosses.
-        Heals are priced by the heal budget; field buffs are free but must gain `prep_margin`.
-        Every option's value already includes the best heals that could follow it."""
+        """Heal / field buff / grenade / smoke / flee / fight, whichever gives the most expected bosses.
+        Heals and smoke bombs are priced by their run budgets; field buffs are free but must gain
+        `prep_margin`. Every option's value already includes the best heals that could follow it."""
         run = state["run"]
         enemy = run["event"]["enemy"]
         boss = bool(enemy.get("boss"))
@@ -288,8 +292,12 @@ class MarkovPolicy(BossFarmPolicy):
             values = tables.boss_at(g, window, e, enemy["hp"] / max(1.0, float(enemy.get("max_hp") or enemy["hp"])))
         else:
             values = tables.at(tables.encounter[kind], g, e)
-        li = tables.price_index(values, stock)
-        lam = float(tables.lambdas[li])
+        smoke = None if boss else self._bag_item(run, "smoke")   # on a boss a smoke ends the run
+        if smoke is not None and not self._allowed(g, "use", {"index": smoke["index"]}):
+            smoke = None
+        smokes = smoke_count(run)
+        li = tables.price_index(values, stock, smokes)
+        lam, mu = float(tables.lambdas[li]), float(tables.smoke_prices[li])
         heals = self._heal_options(run, True)
         closure = _Closure([o.item for o in heals], grid, max_hp, np.array([lam]), self.mcfg.mdp.heal_iterations)
 
@@ -300,7 +308,7 @@ class MarkovPolicy(BossFarmPolicy):
         fight_curve, death_curve = self._fight_curve(state, tables, li, build, enemy)
         death = float(np.interp(e, grid, death_curve))
         tag = f"{kind} {enemy.get('name')}"
-        summary = f"{tag}: death {death:.1%}, lam {lam:g}, stock {stock:.1f}"
+        summary = f"{tag}: death {death:.1%}, lam {lam:g}, stock {stock:.1f}, smoke {smokes} @ {mu:g}"
 
         # options that do not consume a priced heal: fight now, flee, field buffs, grenade
         curve = fight_curve
@@ -319,6 +327,11 @@ class MarkovPolicy(BossFarmPolicy):
             best_prep, q_prep = self._best_preparation(state, tables, li, build, enemy, with_heals)
 
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, heals)
+        if smoke is not None:
+            q_smoke = float(np.interp(e, grid, tables.ready[g][li])) - mu
+            if q_smoke > max(q_base, q_heal, q_prep) + self.mcfg.heal_margin:
+                return Decision("use", {"index": smoke["index"]},
+                                f"{summary} -> smoke ({q_smoke:.2f} vs {max(q_base, q_heal, q_prep):.2f})")
         if best_prep is not None and q_prep > max(q_base, q_heal) + self.mcfg.prep_margin:
             return Decision(best_prep[0], best_prep[1], f"{summary} -> {best_prep[2]} ({q_prep:.2f} vs {q_base:.2f})")
         if option and q_heal > q_go + self.mcfg.heal_margin:
@@ -375,7 +388,7 @@ class MarkovPolicy(BossFarmPolicy):
             return Decision("extract", {}, f"reached max floor {self.cfg.max_floor}")
         g, e, max_hp = run["floor"], effective_hp(run), float(run["max_hp"])
         stock = heal_stock(run)
-        li = tables.price_index(tables.at(tables.ready, g, e), stock)
+        li = tables.price_index(tables.at(tables.ready, g, e), stock, smoke_count(run))
         lam, grid = float(tables.lambdas[li]), tables.grid
         q_step = float(np.interp(e, grid, tables.step[g][li]))
         q_rush = float(np.interp(e, grid, tables.rush[g][li]))

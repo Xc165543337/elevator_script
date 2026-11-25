@@ -15,7 +15,8 @@ price `lam` (bosses per max-HP unit of healing) each heal costs `lam * units`, a
 earn `lam * units`. Tables are solved for a grid of prices at once. At decision time the price is
 chosen by the dual bound  V(s, H) ~= min_lam V_lam(s) + lam * H  for the live heal stock H, and the
 action is the best one under that price. This is re-evaluated at every decision, so the price rises
-as the stock runs down.
+as the stock runs down. Smoke bombs (leave a normal / elite encounter unharmed) are a second budget with
+their own price mu; tables are solved for every (lambda, mu) pair of the two grids.
 
 Transitions come from the same combat model as everything else (model.fight, Monte Carlo per grid
 point); encounter odds from model.floor_mix. Events, loot and relics leave HP unchanged here (the live
@@ -37,7 +38,7 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 3            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 4            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -140,20 +141,24 @@ class MdpConfig:
     boss_iterations: int = 60      # value-iteration sweeps of the stationary boss window (convergence
                                    # limit only: a boss never retreats, the fight goes on until one side dies)
     heal_iterations: int = 8       # heal chains considered per decision (closure depth)
-    lambdas: tuple = (0.0, 0.001, 0.003, 0.006, 0.01, 0.02, 0.035, 0.05, 0.075, 0.1, 0.15, 0.25,
-                      0.4, 0.7, 1.2, 2.0, 4.0, 10.0)
+    lambdas: tuple = (0.0, 0.01, 0.05, 0.15, 0.5, 10.0)
+    # smoke-bomb prices in bosses per bomb; the last one is prohibitive (= no smoke left)
+    smoke_prices: tuple = (0.0, 0.1, 0.3, 1.0, 1000.0)
     seed: int = 0
 
 
 @dataclass
 class ValueTables:
-    """Solved values, indexed [floor, lambda, hp point] (boss: [window, lambda, hp, boss hp])."""
+    """Solved values, indexed [floor, price, hp point] (boss: [window, price, hp, boss hp]).
+    A price index p stands for the pair (lambdas[p], smoke_prices[p]): heal price per max-HP unit and
+    smoke-bomb price per bomb. Stored as float32."""
     config: MdpConfig
     build: Build
     map_id: str
     grid: np.ndarray
     boss_grid: np.ndarray
     lambdas: np.ndarray
+    smoke_prices: np.ndarray
     ready: np.ndarray            # value at a ready state on floor g
     step: np.ndarray             # value of `down` from a ready state on floor g
     rush: np.ndarray             # value of `rush` from a ready state on floor g
@@ -178,16 +183,19 @@ class ValueTables:
         wb = interp_matrix(np.array([b]), self.boss_grid)[0]
         return np.einsum("lnb,n,b->l", self.boss[floor][w], we, wb)
 
-    def price_index(self, values: np.ndarray, heal_units: float) -> int:
-        """Index of the heal price minimising the dual bound V_lam + lam * H."""
-        return int(np.argmin(values + self.lambdas * max(0.0, heal_units)))
+    def price_index(self, values: np.ndarray, heal_units: float, smokes: int = 0) -> int:
+        """Index of the prices minimising the dual bound V + lam * H + mu * S (heal units H, smokes S)."""
+        return int(np.argmin(values + self.lambdas * max(0.0, heal_units) + self.smoke_prices * max(0, smokes)))
 
 
-def grids(config: MdpConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(effective-HP grid, boss-HP grid, heal prices). Boss HP starts just above 0 (nearly dead)."""
+def grids(config: MdpConfig) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(effective-HP grid, boss-HP grid, heal price, smoke price); the prices list every pair of the
+    two configured grids. Boss HP starts just above 0 (nearly dead)."""
     grid = np.linspace(0.0, E_MAX, config.hp_points)
     boss_grid = np.concatenate([[0.02], np.linspace(0.0, 1.0, config.boss_points)[1:]])
-    return grid, boss_grid, np.array(config.lambdas, dtype=float)
+    lam, mu = np.meshgrid(np.array(config.lambdas, dtype=float), np.array(config.smoke_prices, dtype=float),
+                          indexing="ij")
+    return grid, boss_grid, lam.ravel(), mu.ravel()
 
 
 # --------------------------------------------------------------------------- kernels
@@ -280,8 +288,9 @@ class _Closure:
         costs = np.repeat(self.costs, width, axis=1)[:, None, :]                 # (I, 1, L*rest)
         value = flat_base
         for _ in range(self.iterations):
-            moved = (self.moves @ value - costs).max(axis=0)                      # (N, L*rest)
-            new = np.maximum(flat_base, moved)
+            new = flat_base.copy()
+            for move, cost in zip(self.moves, costs):                            # one BLAS call per item
+                np.maximum(new, move @ value - cost, out=new)
             if np.allclose(new, value):
                 break
             value = new
@@ -293,7 +302,7 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     """Backward induction from config.max_floor down to F1 for every heal price at once."""
     t0 = time.time()
     rng = np.random.default_rng(config.seed)
-    grid, boss_grid, lambdas = grids(config)
+    grid, boss_grid, lambdas, smoke_prices = grids(config)
     n, nb, nl, top = len(grid), len(boss_grid), len(lambdas), config.max_floor
     max_hp = build.hp
     any_heal = _Closure(list(SHOP_HEALS.values()) + list(FIELD_HEALS.values()), grid, max_hp, lambdas,
@@ -350,7 +359,9 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             p = flee_chance(build, g)
             flee_value = p * ready[g] + (1 - p) * (fight_value @ fail_at.T)
             flee_value[:, 0] = 0.0
-            encounter[kind][g] = any_heal(np.maximum(fight_value, flee_value))
+            smoke_value = ready[g] - smoke_prices[:, None]        # smoke bomb: leave unharmed, stay on g
+            smoke_value[:, 0] = 0.0
+            encounter[kind][g] = any_heal(np.maximum(np.maximum(fight_value, flee_value), smoke_value))
         # 4. boss on g
         if is_boss_floor(g):
             boss_tables[g] = _solve_boss(build, enemy("boss", g, map_id), grid, boss_grid, lambdas,
@@ -374,8 +385,13 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
         if progress and g % 200 == 0:
             progress(f"mdp: floor {g} ({time.time() - t0:.0f}s)")
     return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
-                       lambdas=lambdas, ready=ready, step=step, rush=rush, encounter=encounter,
-                       boss=boss_tables, solve_seconds=time.time() - t0)
+                       lambdas=lambdas, smoke_prices=smoke_prices, ready=f32(ready), step=f32(step),
+                       rush=f32(rush), encounter={k: f32(v) for k, v in encounter.items()},
+                       boss={f: f32(v) for f, v in boss_tables.items()}, solve_seconds=time.time() - t0)
+
+
+def f32(a: np.ndarray) -> np.ndarray:
+    return a.astype(np.float32)
 
 
 def _solve_boss(build: Build, foe: dict, grid: np.ndarray, boss_grid: np.ndarray, lambdas: np.ndarray,
@@ -420,16 +436,13 @@ def save_tables(tables: ValueTables, path: str) -> None:
 
 
 def load_tables(path: str, build: Build, map_id: str, config: MdpConfig) -> ValueTables:
-    grid, boss_grid, lambdas = grids(config)
+    grid, boss_grid, lambdas, smoke_prices = grids(config)
     with np.load(path) as data:
         floors = data["boss_floors"].tolist()
-        boss = {f: data["boss"][i].astype(float) for i, f in enumerate(floors)} if floors else {}
-        return ValueTables(config=config, build=build, map_id=map_id,
-                           grid=grid, boss_grid=boss_grid, lambdas=lambdas,
-                           ready=data["ready"].astype(float), step=data["step"].astype(float),
-                           rush=data["rush"].astype(float),
-                           encounter={"normal": data["enc_normal"].astype(float),
-                                      "elite": data["enc_elite"].astype(float)},
+        boss = {f: data["boss"][i] for i, f in enumerate(floors)} if floors else {}
+        return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
+                           lambdas=lambdas, smoke_prices=smoke_prices, ready=data["ready"], step=data["step"],
+                           rush=data["rush"], encounter={"normal": data["enc_normal"], "elite": data["enc_elite"]},
                            boss=boss)
 
 

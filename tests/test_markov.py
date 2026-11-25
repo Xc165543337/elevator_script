@@ -178,7 +178,7 @@ def test_guard_charges_cut_landed_hits():
 
 
 def test_uses_a_defensive_buff_before_a_risky_fight(policy):
-    s = state(floor=150, hp=380, foe=foe("elite", 150))
+    s = state(floor=165, hp=380, foe=foe("elite", 165))
     s["run"]["field"] = [{"id": "field_plate", "name": "应急陶板", "quantity": 1}]
     s["run"]["stats"] = s["run"]["effective_stats"]
     decision = policy.decide(s)
@@ -209,3 +209,28 @@ def test_tables_ignore_ice_tea_agility(policy):
     s["run"]["stats"] = {**s["run"]["effective_stats"]}
     s["run"]["effective_stats"] = {**s["run"]["stats"], "agi": BUILD.agi + 15}   # tea active
     assert policy._table_build(s).agi == BUILD.agi
+
+
+# ------------------------------------------------------------------ smoke bombs
+def test_smokes_past_a_deadly_elite(policy):
+    s = state(floor=165, hp=200, foe=foe("elite", 165), bag=bag_of("smoke", "smoke"))   # boss at F170 still ahead
+    decision = policy.decide(s)
+    assert decision.command == "use" and decision.params == {"index": 1}, decision.reason
+
+
+def test_keeps_smokes_for_a_safe_fight(policy):
+    s = state(floor=60, hp=666, foe=foe("normal", 60), bag=bag_of("smoke", "smoke"))
+    assert policy.decide(s).command == "fight"
+
+
+def test_never_smokes_a_boss(policy):
+    s = state(floor=190, hp=150, foe=foe("boss", 190), bag=bag_of("smoke"), controls=("fight", "extract"))
+    assert policy.decide(s).command != "use"
+
+
+def test_price_choice_counts_smokes(tables):
+    values = tables.at(tables.encounter["elite"], 165, 0.5)
+    none = tables.price_index(values, 0.0, 0)
+    some = tables.price_index(values, 0.0, 5)
+    assert tables.smoke_prices[none] >= 1.0                          # no smokes: a price that never uses one
+    assert tables.smoke_prices[some] < max(tables.smoke_prices)

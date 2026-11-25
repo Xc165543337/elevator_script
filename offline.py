@@ -11,6 +11,7 @@ live server (some later patches are missing), so treat results as a comparison b
 as a forecast of live numbers.
 
     python offline.py --engine ../longniang-qqbot --runs 10 --policies threshold,markov
+    python offline.py --engine ../longniang-qqbot --runs 10 --loadout "$(python -c 'import farm; print(farm.DEFAULT_LOADOUT)'),smoke=50"
 """
 from __future__ import annotations
 
@@ -116,6 +117,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
     farm_args = build_parser().parse_args([
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
         "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off",
+        *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
     farmer.cal.path = os.path.join(out_dir, "calibration.json")   # never touch the live calibration
@@ -132,6 +134,7 @@ def main() -> None:
     ap.add_argument("--runs", type=int, default=10, help="runs per policy")
     ap.add_argument("--policies", default="threshold,markov")
     ap.add_argument("--out", default=os.path.join(HERE, "logs", "offline"))
+    ap.add_argument("--loadout", default=None, help="supplies to carry (farm.py format); default: farm.py's")
     args = ap.parse_args()
     results = {p: run_policy(p, args) for p in args.policies.split(",")}
     print("\npolicy      runs  bosses (mean +- se)  floor (mean)  steps (mean)")
