@@ -59,6 +59,9 @@ of three normal fights is <1% lethal; otherwise it steps one floor at a time.
 | `optimize.py` | Searches the warehouse for the build with most bosses per run. |
 | `combat.py` | Live fight estimate from the in-run state (uses `model.py`), with online-calibrated damage factors (`calibration.json`). |
 | `policy.py` | `BossFarmPolicy.decide(state)` – pure decision function: fight/heal/buff/flee/extract, events, temp gear, collectible protection, rush vs. step. |
+| `mdp.py` | Markov decision process of a run (floor × effective HP × decision point), solved by backward induction; the heal budget is priced with a Lagrange multiplier. |
+| `markov_policy.py` | `MarkovPolicy`: `BossFarmPolicy` whose heal/fight/flee/rush/step decisions come from the solved tables (`--policy markov`). Tables are cached in `cache/`. |
+| `offline.py` | Plays complete runs offline against the game's own engine (from the bot repository), for policy comparisons. |
 | `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop when all rainbows are unlocked. |
 | `tests/` | Unit tests for the pure logic (`python -m pytest -q tests`). |
 | `docs/` | Game formulas, in-game guide dump, notes (`GAME_NOTES.md`). |
@@ -89,6 +92,28 @@ python farm.py --mode real --map tide --runs 3 --max-floor 40 --i-understand-rea
 Useful options: `--loadout field_surgery=12,critical_serum=8,triage_vial=10,coffee=10`,
 `--gold-reserve 1000000`, `--max-floor N`, `--delay 0.05`, `--balance-gear-score N`, `--no-restock`, `--verbose`.
 An interrupted run is resumed automatically on the next start.
+
+## Markov policy (`--policy markov`)
+
+The run is modelled as a Markov decision process: state = floor, effective HP (HP + shield) and the
+decision point (between floors / normal or elite waiting / boss window); actions = heal with a given
+item, fight, flee, single step, rush; reward = +1 per boss kill. Transitions come from the combat model
+(`model.py`) and the server's encounter odds; the tables are solved backward from F2600 (~1 min, then
+cached per build). The heal stock is a run-long budget: instead of tracking the full inventory, each
+heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
+that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
+
+- No voluntary extraction (death and extraction both end the run; only bosses count). Collectible
+  banking still extracts; `MarkovConfig.extract_below` re-enables value-based extraction.
+- A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
+  the encounter instead.
+- Rush is chosen while it gives up at most `rush_tolerance` (0.02) expected bosses against single steps.
+
+Offline comparison against the game engine (needs a checkout of `SlimeTROH/longniang-qqbot`):
+
+```bash
+python offline.py --engine ../longniang-qqbot --runs 30 --policies threshold,markov
+```
 
 ## Browser userscript
 

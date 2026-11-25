@@ -2,6 +2,7 @@
 
 Examples:
     python farm.py --mode sim --runs 3                     # free practice runs (no rewards)
+    python farm.py --mode sim --runs 3 --policy markov     # decisions from the solved MDP (mdp.py)
     python farm.py --mode real --runs 5 --i-understand-real # spends tickets/gold
     python farm.py --status                                 # show collection progress
 
@@ -22,6 +23,7 @@ import requests
 
 from client import ElevatorClient, GameError
 from combat import Calibration
+from markov_policy import MarkovConfig, MarkovPolicy
 from policy import BossFarmPolicy, PolicyConfig
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,15 +70,21 @@ def select_loot_to_sell(stock: list[dict], baseline: set[int], dedupe_rarities: 
 
 
 class Farmer:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, client=None):
+        """`client` defaults to the live server; offline.py passes an in-process game engine."""
         self.args = args
-        self.client = ElevatorClient()
+        self.client = client or ElevatorClient()
         self.cal = Calibration.load(os.path.join(HERE, "calibration.json"))
-        self.policy = BossFarmPolicy(self.cal, PolicyConfig(max_floor=args.max_floor,
-                                                             balance_gear_score=args.balance_gear_score))
-        os.makedirs(LOG_DIR, exist_ok=True)
+        config = PolicyConfig(max_floor=args.max_floor, balance_gear_score=args.balance_gear_score)
+        if args.policy == "markov":
+            self.policy = MarkovPolicy(self.cal, config, MarkovConfig(cache_dir=os.path.join(HERE, "cache")),
+                                       log=self.log)
+        else:
+            self.policy = BossFarmPolicy(self.cal, config)
+        self.log_dir = args.log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.trace = open(os.path.join(LOG_DIR, f"trace_{stamp}_{args.mode}.jsonl"), "a", encoding="utf-8")
+        self.trace = open(os.path.join(self.log_dir, f"trace_{stamp}_{args.mode}.jsonl"), "a", encoding="utf-8")
 
     # ------------------------------------------------------------- utilities
     def log(self, msg: str) -> None:
@@ -311,15 +319,20 @@ class Farmer:
         return items
 
     def record(self, summary: dict) -> None:
-        path = os.path.join(LOG_DIR, "runs.csv")
-        new = not os.path.exists(path)
+        path = os.path.join(self.log_dir, "runs.csv")
+        row = {"time": datetime.now().isoformat(timespec="seconds"), "mode": self.args.mode,
+               "policy": self.args.policy, "map": self.args.map, "floor": summary["floor"],
+               "bosses": summary["bosses"], "rainbows": "|".join(summary["rainbows"]), "steps": summary["steps"],
+               "seconds": summary["seconds"], "outcome": summary["outcome"], "summary": summary["summary"]}
+        header = list(row)
+        if os.path.exists(path):  # keep an existing file's columns (older files have no "policy")
+            with open(path, newline="", encoding="utf-8") as fh:
+                header = next(csv.reader(fh), header)
         with open(path, "a", newline="", encoding="utf-8") as fh:
-            writer = csv.writer(fh)
-            if new:
-                writer.writerow(["time", "mode", "map", "floor", "bosses", "rainbows", "steps", "seconds", "outcome", "summary"])
-            writer.writerow([datetime.now().isoformat(timespec="seconds"), self.args.mode, self.args.map,
-                             summary["floor"], summary["bosses"], "|".join(summary["rainbows"]),
-                             summary["steps"], summary["seconds"], summary["outcome"], summary["summary"]])
+            writer = csv.DictWriter(fh, fieldnames=header, extrasaction="ignore")
+            if fh.tell() == 0:
+                writer.writeheader()
+            writer.writerow(row)
 
     # ------------------------------------------------------------- main
     def run(self) -> None:
@@ -377,9 +390,12 @@ class Farmer:
         self.log(f"calibration: k_player={self.cal.k_player:.3f} k_enemy={self.cal.k_enemy:.3f}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=("sim", "real"), default="sim")
+    ap.add_argument("--policy", choices=("threshold", "markov"), default="threshold",
+                    help="threshold = hand-tuned rules (policy.py); markov = solved MDP (markov_policy.py)")
+    ap.add_argument("--log-dir", default=LOG_DIR, help="where traces and runs.csv are written")
     ap.add_argument("--map", default="mall", help="map id (mall is optimal for boss farming)")
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--loadout", default=DEFAULT_LOADOUT, help="supplies to carry, e.g. field_surgery=12,coffee=10")
@@ -402,7 +418,11 @@ def main() -> None:
     ap.add_argument("--status", action="store_true", help="print collection status and exit")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--i-understand-real", action="store_true", help="required for --mode real")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     if args.sell_now and args.mode != "real":
         sys.exit("--sell-now needs --mode real --i-understand-real")
     if args.mode == "real" and not args.i_understand_real and not args.status:
