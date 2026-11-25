@@ -336,9 +336,12 @@ class Farmer:
     def play_run(self) -> dict:
         """Play until the run ends. Counters live in self.tally so they survive resumes."""
         t = self.tally
+        preview = None   # a wish preview comes back in the command result, not in the state
         while self.client.state.get("run"):
             self.ensure_pursuit()
             state = self.client.state
+            if preview:
+                state = {**state, "wish_preview": preview}
             run = state["run"]
             self.check_floor_odds(run)
             floor = t["floor"] = run["floor"]
@@ -360,6 +363,7 @@ class Farmer:
                 continue
             t["steps"] += 1
             result = data.get("result") or {}
+            preview = result.get("wish_preview")
             self.policy.note(result.get("limit_notices") or [])
             battle = result.get("battle")
             if enemy and battle and battle.get("log"):

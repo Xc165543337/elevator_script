@@ -416,6 +416,8 @@ class MarkovPolicy(BossFarmPolicy):
         if sent and preview.get("token") and (state["run"].get("event") or {}).get("enemy"):
             return Decision("wish_confirm", {"token": preview["token"]},
                             f"confirm wish on {preview.get('enemy')} (wipes {preview.get('value', 0):,} of run loot)")
+        if sent:   # no preview came back: do not ask again on this floor
+            self.banned.add((state["run"]["floor"], "field_use", repr(sorted({"id": WISH}.items()))))
         return super()._decide(state)
 
     def _best_preparation(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict,

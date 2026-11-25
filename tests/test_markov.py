@@ -334,3 +334,10 @@ def test_wish_is_kept_for_a_safe_fight_and_never_wipes_a_missing_collectible(pol
     policy.missing_collectibles = lambda _state: {"prism_sun"}
     assert policy.decide(_wish_state(666)).command != "field_use"
     assert policy.decide(_wish_state(60, missing_in_bag=True)).params != {"id": "field_wish"}
+
+
+def test_wish_is_not_requested_again_when_no_preview_comes_back(policy):
+    policy.missing_collectibles = lambda _state: set()
+    s = _wish_state(60)
+    assert policy.decide(s).params == {"id": "field_wish"}
+    assert policy.decide(s).params != {"id": "field_wish"}            # no preview in the state: banned on this floor
