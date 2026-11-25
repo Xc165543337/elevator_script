@@ -35,6 +35,13 @@ MAX_CARRY = 50   # live server limit per supply in one start request
 # Craft-only supplies (grenade, shield) would spend materials, and doll / pouch are kept at home.
 DEFAULT_LOADOUT = ",".join(["adrenaline=2", *(f"{item}={MAX_CARRY}" for item in (*SUPPLY_HEAL, "smoke"))])
 TICKET_PRICE = 350
+# rush_settings parameter -> (state field, wanted value, set even if the server does not report it)
+RUSH_SETTINGS = {
+    "floors": ("rush_floors", 10, True),
+    "skip_valuable": ("rush_skip_valuable", True, True),
+    "event_mode": ("rush_event_mode", "pause", False),
+    "auto_elite": ("rush_auto_elite", False, False),
+}
 
 
 def parse_loadout(text: str) -> dict[str, int]:
@@ -245,9 +252,15 @@ class Farmer:
         self.log(f"sold {sold} run items (~{earned:,} gold)")
 
     def ensure_rush_settings(self) -> None:
+        """Rush the way the models assume: 10 floors, no pause for gold / red loot, and a stop at events
+        and before elites, so each of those is decided individually. Settings a server does not report
+        (older versions) are left alone."""
         player = self.client.state["player"]
-        if player.get("rush_floors") != 10 or not player.get("rush_skip_valuable"):
-            self.call("rush_settings", {"floors": 10, "skip_valuable": True})
+        change = {key: want for key, (field, want, required) in RUSH_SETTINGS.items()
+                  if (required or field in player) and player.get(field) != want}
+        if change:
+            self.call("rush_settings", change)
+            self.log(f"rush settings changed: {change}")
 
     # ------------------------------------------------------------- run loop
     def pursuit(self) -> list[str] | None:

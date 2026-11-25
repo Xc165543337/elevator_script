@@ -1,4 +1,4 @@
-"""Tests for the blessing (闪耀祝福) helpers and how the runner uses them."""
+"""Tests for the blessing (闪耀祝福) helpers and the runner's server-side settings."""
 import os
 import sys
 from collections import Counter
@@ -83,3 +83,14 @@ def test_pending_choice_is_sent_during_the_run(tmp_path):
     farmer.focus = farmer.pursuit()
     farmer.ensure_pursuit()
     assert client.sent == [("pursue", {"focus": ["A", "B"]})]
+
+
+def test_rush_settings_stop_before_elites(tmp_path):
+    args = build_parser().parse_args(["--delay", "0", "--log-dir", str(tmp_path)])
+    player = {"rush_floors": 10, "rush_skip_valuable": True, "rush_event_mode": "pause", "rush_auto_elite": True}
+    client = RecordingClient({"player": player})
+    Farmer(args, client=client).ensure_rush_settings()
+    assert client.sent == [("rush_settings", {"auto_elite": False})]
+    older = RecordingClient({"player": {"rush_floors": 5, "rush_skip_valuable": True}})
+    Farmer(args, client=older).ensure_rush_settings()
+    assert older.sent == [("rush_settings", {"floors": 10})]

@@ -41,6 +41,9 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
     the fight resumes from there.
   - Bosses: 4 rounds per `fight`. HP and the cumulative round count carry over; between windows you can
     use potions, field items and change temp gear. A boss never retreats.
+- **Rush settings** (`rush_settings`): `floors` 3/5/10, `skip_valuable`, `event_mode` (pause / random / ignore
+  events) and `auto_elite`. With `auto_elite` on, a rush fights the first 8 rounds of an elite by itself and
+  stops at its pause (`连战至 F628 · 精英中场`). The agent sets 10 / skip / pause / no auto-elite at run start.
 - **Encounter odds** are shown for the next floor in `run.next_floor` (e.g. `📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)`).
   Since 2026-11-25 the deep-floor mix is chest 34%, normal 41%, elite 12%, event 13% (was 34 / 33 / 20 / 13:
   elites moved to normal monsters). The F1 row and the 12-floor blend are assumed unchanged.

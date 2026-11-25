@@ -391,10 +391,25 @@ export class Farmer {
         this.log(`出售 ${sold} 件物品（约 ${int(earned)} 金币）`)
     }
 
+    /**
+     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）。
+     * 服务器未提供的设置（旧版本）保持不动。
+     */
     private async ensureRushSettings(): Promise<void> {
         const player = this.client.state.player
-        if (player.rush_floors !== 10 || !player.rush_skip_valuable) {
-            await this.call('rush_settings', { floors: 10, skip_valuable: true })
+        const wanted: [string, string, unknown, boolean][] = [
+            ['floors', 'rush_floors', 10, true],
+            ['skip_valuable', 'rush_skip_valuable', true, true],
+            ['event_mode', 'rush_event_mode', 'pause', false],
+            ['auto_elite', 'rush_auto_elite', false, false]
+        ]
+        const change: Record<string, unknown> = {}
+        for (const [key, field, want, required] of wanted) {
+            if ((required || field in player) && player[field] !== want) change[key] = want
+        }
+        if (Object.keys(change).length) {
+            await this.call('rush_settings', change)
+            this.log(`连战设置已调整：${JSON.stringify(change)}`)
         }
     }
 
