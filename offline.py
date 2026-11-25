@@ -93,11 +93,17 @@ class LocalClient:
 
     # -- test fixture ---------------------------------------------------------
     def _top_up(self) -> None:
-        """Unlimited gold and tickets, a 4-slot safe box: the comparison is about play, not economy."""
+        """Between runs: unlimited gold and tickets, a 4-slot safe box, and an empty warehouse apart from
+        supplies. Banked loot would otherwise pile up (nothing is sold offline) and the state the engine
+        rebuilds after every command grows with it - 1.5 MB and 90 ms per command after seven runs."""
         if self.state.get("run"):
             return
+        supplies = [k for k, v in self.web.game.catalog.items.items() if v.get("kind") == "supply"]
+        marks = ",".join("?" * len(supplies))
         with self.web.game.store.transaction() as db:
             db.execute("UPDATE players SET gold=?, tickets=20, safebox=4 WHERE user_id=?", (GOLD, UID))
+            db.execute(f"DELETE FROM inventory WHERE user_id=? AND item_id NOT IN ({marks})", (UID, *supplies))
+            db.execute("DELETE FROM equipment WHERE user_id=?", (UID,))
         self.state = self.web.state(UID, GROUP, NICK, now=self.now)
 
 
