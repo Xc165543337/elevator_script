@@ -1,0 +1,74 @@
+name: Release
+
+# 推送版本标签（如 v1.0.0）时发布：
+# 1. 校验标签与 userscript/package.json 版本一致、userscript/CHANGELOG.md 中有该版本条目（几秒内失败）
+# 2. 运行完整 CI（复用 ci.yml）
+# 3. 创建 GitHub Release：附带 elevator-farmer.user.js，正文为 CHANGELOG 中该版本的内容
+# 附件名固定不含版本号。仓库公开时，脚本中的 @updateURL 指向 releases/latest/download/elevator-farmer.user.js，
+# 油猴据此自动检查更新；私有仓库的 Release 仅仓库成员可见，需手动下载新版本覆盖安装。
+on:
+    push:
+        tags: ['v*']
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    preflight:
+        name: 校验版本与更新日志
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: 检出代码
+              uses: actions/checkout@v7
+
+            - name: 安装 Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: lts/*
+
+            - name: 校验标签并提取发布说明
+              run: node userscript/scripts/release-notes.ts "$GITHUB_REF_NAME"
+
+    verify:
+        name: 完整检查
+        needs: preflight
+        uses: ./.github/workflows/ci.yml
+
+    release:
+        name: 创建 Release
+        needs: verify
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+            contents: write
+        steps:
+            - name: 检出代码
+              uses: actions/checkout@v7
+
+            - name: 安装 Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: lts/*
+
+            - name: 生成发布说明
+              run: node userscript/scripts/release-notes.ts "$GITHUB_REF_NAME" release-notes.md
+
+            - name: 下载 CI 构建的脚本
+              uses: actions/download-artifact@v8
+              with:
+                  name: elevator-farmer-${{ github.sha }}
+                  path: dist
+
+            - name: 创建 Release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh release create "$GITHUB_REF_NAME" dist/elevator-farmer.user.js \
+                      --verify-tag \
+                      --title "无尽电梯 · 自动刷首领 ${GITHUB_REF_NAME}" \
+                      --notes-file release-notes.md

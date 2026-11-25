@@ -1,0 +1,50 @@
+# ============================================================================
+# Dependabot：依赖版本更新
+#
+# - cooldown：新版本发布满 14 天后才提出更新（降低遇到被撤回 / 被投毒版本的风险）。
+# - 次要 / 补丁版本按组合并为一个 PR；主版本单独提出，便于逐个审阅破坏性变更。
+# - 油猴脚本没有运行时依赖，npm 依赖全部是构建 / 测试工具。
+# ============================================================================
+
+version: 2
+updates:
+    - package-ecosystem: npm
+      directory: /userscript
+      schedule:
+          interval: weekly
+          day: monday
+      cooldown:
+          default-days: 14
+      open-pull-requests-limit: 5
+      commit-message:
+          prefix: chore(deps)
+      groups:
+          dev-dependencies:
+              dependency-type: development
+              update-types:
+                  - minor
+                  - patch
+
+    - package-ecosystem: pip
+      directory: /
+      schedule:
+          interval: weekly
+          day: monday
+      cooldown:
+          default-days: 14
+      commit-message:
+          prefix: chore(deps)
+
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: weekly
+          day: monday
+      cooldown:
+          default-days: 14
+      commit-message:
+          prefix: ci(deps)
+      groups:
+          github-actions:
+              patterns:
+                  - '*'

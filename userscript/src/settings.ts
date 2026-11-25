@@ -1,0 +1,97 @@
+// ============================================================================
+// settings.ts — 可在面板中配置的参数（对应 farm.py 的命令行选项）
+// ============================================================================
+
+export const MAPS: [string, string][] = [
+    ['mall', '废弃商场（刷首领最佳）'],
+    ['subway', '地铁'],
+    ['abyss', '深渊'],
+    ['auction', '拍卖行'],
+    ['tide', '潮汐发电站（归潮档案）'],
+    ['zenith', '天顶']
+]
+
+export const DEFAULT_LOADOUT = 'adrenaline=2,pouch=1,field_surgery=50,triage_vial=20,coffee=10,grenade=2'
+
+export interface Settings {
+    /** sim = 练习（免费、无收益）；real = 正式（消耗门票与金币） */
+    mode: 'sim' | 'real'
+    map: string
+    runs: number
+    /** 到达即撤离；null = 不限 */
+    maxFloor: number | null
+    loadout: string
+    restock: boolean
+    buyTickets: boolean
+    goldReserve: number
+    /** 两次请求之间的最短间隔（秒） */
+    delay: number
+    balanceGearScore: number
+    sellLoot: boolean
+    sellRarities: string
+    dedupeRarities: string
+    verbose: boolean
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+    mode: 'sim',
+    map: 'mall',
+    runs: 1,
+    maxFloor: null,
+    loadout: DEFAULT_LOADOUT,
+    restock: true,
+    buyTickets: false,
+    goldReserve: 1_000_000,
+    delay: 0.05,
+    balanceGearScore: -1.0,
+    sellLoot: false,
+    sellRarities: 'purple,green,white',
+    dedupeRarities: 'red,gold',
+    verbose: false
+}
+
+/** 合并已保存的设置，丢弃类型不符的字段（旧版本或手动改坏的数据） */
+export function normalizeSettings(saved: unknown): Settings {
+    const out: Settings = { ...DEFAULT_SETTINGS }
+    if (!saved || typeof saved !== 'object') return out
+    const src = saved as Record<string, unknown>
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+        const value = src[key]
+        const def = DEFAULT_SETTINGS[key]
+        if (key === 'maxFloor') {
+            if (value === null || (typeof value === 'number' && Number.isInteger(value) && value > 0))
+                out.maxFloor = value
+        } else if (key === 'mode') {
+            if (value === 'sim' || value === 'real') out.mode = value
+        } else if (key === 'map') {
+            if (typeof value === 'string' && MAPS.some(([id]) => id === value)) out.map = value
+        } else if (typeof value === typeof def && (typeof value !== 'number' || Number.isFinite(value))) {
+            ;(out as unknown as Record<string, unknown>)[key] = value
+        }
+    }
+    return out
+}
+
+/** "field_surgery=12,coffee=10" → {field_surgery: 12, coffee: 10}；数量省略时为 1 */
+export function parseLoadout(text: string): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const part of text.split(',').map(p => p.trim())) {
+        if (!part) continue
+        const [rawKey, rawQty = ''] = part.split('=', 2)
+        const key = rawKey.trim()
+        const qty = rawQty.trim() === '' ? 1 : Number(rawQty.trim())
+        if (!key || !Number.isInteger(qty) || qty < 0)
+            throw new Error(`携带物资格式错误：「${part}」（应为 物品id=数量）`)
+        out[key] = qty
+    }
+    return out
+}
+
+export function parseList(text: string): Set<string> {
+    return new Set(
+        text
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+    )
+}

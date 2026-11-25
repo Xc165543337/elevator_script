@@ -1,0 +1,85 @@
+name: CI
+
+# 每次推送（任意分支）都运行完整检查：
+# - Python 版（参考实现）：单元测试
+# - 油猴脚本（userscript/）：代码检查、格式检查、类型检查、单元测试与 Python 对照测试、构建
+# 构建出的 elevator-farmer.user.js 作为 Artifact 上传。
+# 版本标签不在此触发：由 release.yml 通过 workflow_call 调用本工作流，避免重复运行。
+on:
+    push:
+        branches: ['**']
+    workflow_dispatch:
+    workflow_call:
+
+permissions:
+    contents: read
+
+# 同一分支只保留最新一次运行
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    python:
+        name: Python 版测试
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: 检出代码
+              uses: actions/checkout@v7
+
+            - name: 安装 Python
+              uses: actions/setup-python@v7
+              with:
+                  python-version: '3.10'
+                  cache: pip
+
+            - name: 安装依赖
+              run: python -m pip install -r requirements.txt
+
+            - name: 单元测试
+              run: python -m pytest -q tests
+
+    userscript:
+        name: 油猴脚本检查与构建
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        defaults:
+            run:
+                working-directory: userscript
+        steps:
+            - name: 检出代码
+              uses: actions/checkout@v7
+
+            - name: 安装 Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: lts/*
+                  cache: npm
+                  cache-dependency-path: userscript/package-lock.json
+
+            - name: 安装依赖
+              run: npm ci
+
+            - name: 代码检查（oxlint）
+              run: npm run lint
+
+            - name: 格式检查（Prettier）
+              run: npm run format:check
+
+            - name: 单元测试与 Python 对照测试
+              run: npm test
+
+            # 仓库公开时写入 @updateURL / @downloadURL（指向最新 Release 的附件）；私有仓库不写
+            - name: 类型检查 + 构建
+              run: npm run build
+              env:
+                  USERSCRIPT_AUTO_UPDATE: ${{ github.event.repository.private == false }}
+
+            - name: 上传脚本构建产物
+              uses: actions/upload-artifact@v7
+              with:
+                  name: elevator-farmer-${{ github.sha }}
+                  path: userscript/dist/elevator-farmer.user.js
+                  if-no-files-found: error
+                  retention-days: 30

@@ -1,0 +1,7 @@
+# 构建产物与依赖
+dist/
+node_modules/
+package-lock.json
+
+# 由 scripts/gen_parity.py 从 Python 版生成，保持原样
+tests/fixtures/

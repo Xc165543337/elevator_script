@@ -1,0 +1,44 @@
+{
+    "$schema": "./node_modules/oxlint/configuration_schema.json",
+    "plugins": ["typescript", "unicorn", "oxc", "import", "vitest"],
+    "categories": {
+        "correctness": "error",
+        "suspicious": "warn"
+    },
+    "env": {
+        "browser": true,
+        "es2022": true
+    },
+    "rules": {
+        "eqeqeq": "error",
+        "no-var": "error",
+        "prefer-const": "error",
+        "typescript/consistent-type-imports": "error",
+        "typescript/no-explicit-any": "warn",
+        "unicorn/no-array-sort": "off",
+        "no-underscore-dangle": [
+            "warn",
+            {
+                "allow": ["__APP_VERSION__"]
+            }
+        ]
+    },
+    "overrides": [
+        {
+            "files": ["scripts/**/*", "tests/**/*.ts", "*.config.ts"],
+            "env": {
+                "node": true
+            }
+        },
+        {
+            "files": ["tests/**/*.ts"],
+            "rules": {
+                "vitest/valid-expect": "off",
+                "vitest/no-conditional-expect": "off",
+                "unicorn/consistent-function-scoping": "off",
+                "no-shadow": "off"
+            }
+        }
+    ],
+    "ignorePatterns": ["dist/**"]
+}

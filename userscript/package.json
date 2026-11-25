@@ -1,0 +1,28 @@
+{
+    "name": "elevator-farmer",
+    "private": true,
+    "version": "1.0.0",
+    "description": "无尽电梯自动刷首领油猴脚本（Python 版 elevator_agent 的浏览器移植）",
+    "type": "module",
+    "engines": {
+        "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+    },
+    "scripts": {
+        "build": "tsc && node scripts/build.mjs",
+        "typecheck": "tsc",
+        "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "test": "vitest run",
+        "parity": "python scripts/gen_parity.py",
+        "check": "npm run lint && npm run format:check && npm run typecheck && npm test"
+    },
+    "devDependencies": {
+        "@types/node": "^26.6.6",
+        "esbuild": "0.28.2",
+        "oxlint": "1.91.0",
+        "prettier": "3.9.10",
+        "typescript": "^7.0.2",
+        "vitest": "^5.1.0"
+    }
+}
