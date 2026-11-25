@@ -315,19 +315,22 @@ def _relic_state(value, bag=(), safe=(), capacity=4):
 def test_loots_a_bag_worth_the_threshold_and_returns_cheaper_ones():
     p = BossFarmPolicy(CAL)
     p.missing_collectibles = lambda _state: set()
-    assert p.decide(_relic_state(150_000_000)).command == "rob"
-    assert p.decide(_relic_state(40_000_000)).command == "rescue"
+    assert p.decide(_relic_state(15_000_000)).command == "rob"
+    assert p.decide(_relic_state(4_000_000)).command == "rescue"
 
 
 def test_extracts_when_the_safe_box_cannot_hold_valuable_loot():
     p = BossFarmPolicy(CAL)
     p.missing_collectibles = lambda _state: set()
-    loot = [{"id": f"g{i}", "index": i + 1, "name": f"g{i}", "value": 30_000_000, "can_protect": True} for i in range(5)]
-    safe = [{"id": "s", "index": k + 1, "name": "s", "value": 60_000_000} for k in range(4)]
+    loot = [{"id": f"g{i}", "index": i + 1, "name": f"g{i}", "value": 3_000_000, "can_protect": True} for i in range(5)]
+    safe = [{"id": "s", "index": k + 1, "name": "s", "value": 6_000_000} for k in range(4)]
+    p.new_run()
+    assert p._bank_loot({"bag": loot, "event": {"kind": "ready"}}, {"extract": {}}) is None   # ordinary loot
+    p.banking = True                                                 # a relic bag was looted
     s = _relic_state(0, bag=loot, safe=safe)
     s["run"]["event"] = {"kind": "ready"}
     s["controls"] = [{"command": c, "params": {}, "label": c} for c in ("down", "rush", "extract")]
     assert p.decide(s).command == "extract"
     coffee = {"id": "coffee", "index": 9, "name": "coffee", "quantity": 5, "value": 300, "can_protect": True}
-    s["run"]["bag"] = [*loot[:2], coffee]                            # 60M exposed: keep farming
+    s["run"]["bag"] = [*loot[:2], coffee]                            # 6M exposed: keep farming
     assert p._bank_loot(s["run"], {"extract": {}}) is None

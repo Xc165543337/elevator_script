@@ -52,6 +52,7 @@ class MarkovConfig:
     # Used when it adds this share of the value at stake over the best alternative (~ the death risk it
     # removes), so it stays in the bag for a real emergency.
     wish_gain: float = 0.15
+    wish_max_loot: int = 100_000_000   # never wipe more run loot than this (bag + safe box) with a wish
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
     cache_dir: str = "cache"
     mdp: MdpConfig = field(default_factory=MdpConfig)
@@ -396,8 +397,8 @@ class MarkovPolicy(BossFarmPolicy):
         return Decision("fight", {}, f"{summary} -> fight ({fight_q:.2f})")
 
     def _wish_ready(self, state: dict) -> bool:
-        """A wish in the field stash, and nothing it would wipe that matters: no still-missing collectible
-        and less loot than relic_loot_value in the bag and safe box."""
+        """A wish in the field stash, and nothing it would wipe that matters: no still-missing collectible,
+        no looted relic bag being banked, and less than wish_max_loot of loot in the bag and safe box."""
         run = state["run"]
         if not any(it.get("id") == WISH and (it.get("quantity") or 0) > 0 for it in run.get("field") or []):
             return False
@@ -407,7 +408,7 @@ class MarkovPolicy(BossFarmPolicy):
         if any(it.get("id") in self.missing_collectibles(state) for it in held):
             return False
         loot = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in held if it.get("id") not in KEEP_IN_BAG)
-        return loot < self.cfg.relic_loot_value
+        return loot < self.mcfg.wish_max_loot and not self.banking
 
     def _decide(self, state: dict) -> Decision:
         sent, self._wish_sent = self._wish_sent, False

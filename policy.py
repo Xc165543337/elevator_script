@@ -52,9 +52,9 @@ class PolicyConfig:
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
     rules: ServerRules = LIVE_RULES     # rules of the server being played (offline engine: LEGACY_RULES)
-    relic_loot_value: int = 100_000_000  # loot (舔包) a fallen player's bag worth at least this instead of
-                                         # returning it for the bounty (捞尸); loot this valuable that the safe box
-                                         # cannot hold is then banked by extracting
+    relic_loot_value: int = 10_000_000  # loot (舔包) a fallen player's bag worth at least this instead of
+                                        # returning it for the bounty (捞尸); while that loot is still worth this
+                                        # much outside the safe box, the agent extracts to bank it
 
 
 @dataclass
@@ -90,6 +90,7 @@ class BossFarmPolicy:
         # (floor, command, params) tuples the server rejected; never proposed again on that floor.
         self.banned: set[tuple] = set()
         self.event_atk_capped = False   # server reported the +60% event attack cap this run
+        self.banking = False            # a looted relic bag is still partly outside the safe box
         self.blocked_until: dict[str, int] = {}  # item id -> last floor it is blocked (e.g. slow heal active)
         self.adrenaline_used = 0
         self.pouch_used = False
@@ -104,6 +105,7 @@ class BossFarmPolicy:
         self.pouch_used = False
         self._base_stats = None
         self.blocked_until = {}
+        self.banking = False   # a looted relic bag is still partly outside the safe box
 
     def note(self, notices: list[str]) -> None:
         """React to server limit notices."""
@@ -327,6 +329,7 @@ class BossFarmPolicy:
         bounty (paid at once, nothing to carry out)."""
         value = relic_value(event)
         if value >= self.cfg.relic_loot_value and "rob" in ctr:
+            self.banking = True
             return Decision("rob", ctr["rob"].get("params", {}),
                             f"loot fallen player's bag worth {value:,} (>= {self.cfg.relic_loot_value:,})")
         if "rescue" in ctr:
@@ -335,15 +338,19 @@ class BossFarmPolicy:
         return Decision("leave", {}, "fallen player's bag: nothing to do")
 
     def _bank_loot(self, run: dict, ctr: dict) -> Decision | None:
-        """Extract once loot worth relic_loot_value sits in the bag, outside the safe box (lost on death).
-        Runs after _secure_loot, so only what the safe box cannot hold counts."""
-        if (run.get("event") or {}).get("enemy") or "extract" not in ctr:
+        """After looting a relic bag: extract while loot worth relic_loot_value is still in the bag, outside
+        the safe box (lost on death). Runs after _secure_loot, so only what the safe box cannot hold counts;
+        once it fits, the run goes on. Ordinary loot alone never triggers an extraction."""
+        if not self.banking:
             return None
         exposed = sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in run.get("bag") or []
                       if it.get("can_protect") and it.get("id") not in KEEP_IN_BAG)
-        if exposed >= self.cfg.relic_loot_value:
-            return Decision("extract", {}, f"bank {exposed:,.0f} of loot the safe box cannot hold")
-        return None
+        if exposed < self.cfg.relic_loot_value:
+            self.banking = False
+            return None
+        if (run.get("event") or {}).get("enemy") or "extract" not in ctr:
+            return None
+        return Decision("extract", {}, f"bank {exposed:,.0f} of looted relic the safe box cannot hold")
 
     def _secure_loot(self, state: dict) -> Decision | None:
         """Keep the most valuable loot in the safe box (kept even if the run fails)."""
