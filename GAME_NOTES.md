@@ -76,7 +76,12 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
 - **为了我所期待的** (`field_wish`): 0.1% per new floor on every map, one guaranteed per run on first reaching
   F500. Using it wipes this run's pickups from the bag and safe box and kills the current enemy outright
   (bosses included, normal rewards). Web API: `field_use {id: field_wish}` returns `state.wish_preview` with a
-  token, then `wish_confirm {token}`. The Markov agent keeps it for emergencies (see `MarkovConfig.wish_gain`).
+  token (in the command result, not the state), then `wish_confirm {token}`. The Markov agent keeps it for
+  emergencies: the coming segment must stay >= 5% deadly after the best heal, and it never wipes 15M+ of loot.
+- **Relic bags (遗物盒)** are created where a player dies with 300+ gold of bag loot (not on extraction, the
+  doll, or new-player insurance) and last 24 h. They can appear within +-1 floor of that floor (not on a boss
+  floor) on the same map, as the 8% `relic` share of the encounter roll, unless claimed or reserved by
+  another player's run; local-group bags are preferred 80/20 over other groups'.
 - The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
   `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
 - Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.

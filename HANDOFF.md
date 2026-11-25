@@ -92,8 +92,8 @@
 - At the F2150 boss the agent picked the wish (为了我所期待的), which would have wiped 23.5M of run loot.
   The margin came from heal costs (~14 windows of full heals), not risk: from full HP a window cannot
   kill (worst ~638 of 702). The user healed through manually and reached F2176. The wish now requires
-  the segment to stay >= 5% deadly after the best heal at hand, and its loot limit follows the 10M relic
-  threshold.
+  the segment to stay >= 5% deadly after the best heal at hand and never wipes 15M or more of run loot
+  (relic bags are looted from 10M).
 - Live API details learned: the wish preview (token) comes in the command result, not the state; the
   server can return HTTP 502 while redeploying (the agent now waits it out).
 
