@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from model import BOSS_WINDOW, Build, enemy, fight
+from model import BOSS_WINDOW, REGULAR_ROUND_CAP, Build, enemy, fight
 
 BERSERK_CAP = 0.75
 
@@ -119,7 +119,7 @@ def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
     enemy = run["event"]["enemy"]
     boss = bool(enemy.get("boss"))
     start = (enemy.get("rounds_fought") or 0) + 1
-    rounds = BOSS_WINDOW - ((start - 1) % BOSS_WINDOW) if boss else 80
+    rounds = BOSS_WINDOW - ((start - 1) % BOSS_WINDOW) if boss else REGULAR_ROUND_CAP
     kp, ke = cal.conservative()
     tuned = replace(build, dealt_mult=build.dealt_mult * kp, taken_mult=build.taken_mult * ke)
     n = samples

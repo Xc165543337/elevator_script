@@ -115,7 +115,8 @@ class BossFarmPolicy:
 
     def lasting_build(self, state: dict) -> Build:
         """Build without floor-limited buffs (they can expire during a multi-floor rush).
-        Uses the effective stats last observed while no such buff was active."""
+        Uses the effective stats last observed while no such buff was active, and only the permanent
+        leech / follow-up / boss bonus from gear (buffs such as 虹吸滴管 +22% leech expire)."""
         run = state["run"]
         if not (run.get("field_buffs") or []):
             self._base_stats = dict(run["effective_stats"])
@@ -124,7 +125,9 @@ class BossFarmPolicy:
         if base:
             build = replace(build, atk=min(build.atk, base["atk"]), defense=min(build.defense, base["def"]),
                             agi=min(build.agi, base["agi"]))
-        return build
+        perm = self._affix_build
+        return replace(build, leech=min(build.leech, perm.leech), combo=min(build.combo, perm.combo),
+                       boss_bonus=min(build.boss_bonus, perm.boss_bonus))
 
     def estimate(self, state: dict) -> FightEstimate:
         return estimate(self.current_build(state), state, self.cal, samples=self.cfg.samples)

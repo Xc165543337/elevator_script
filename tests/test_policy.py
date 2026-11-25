@@ -246,3 +246,18 @@ def test_doll_makes_the_agent_greedy():
     assert make_policy().decide(state).command != "extract"          # dry but doll: keep going
     elite = {"name": "elite", "elite": True, "hp": 2700, "atk": 300, "def": 90, "agi": 55}
     assert make_policy().decide(make_state(hp=300, enemy=elite, bag=doll)).command == "fight"
+
+
+def test_regular_fights_are_capped_at_15_rounds():
+    rng = np.random.default_rng(3)
+    tank = {"hp": 10**6, "atk": 1, "def": 0, "agi": 0}
+    hp, _, ehp, _, used = fight(AFFIXES, np.full(50, 600.0), np.zeros(50), tank, boss=False, rng=rng)
+    assert used.max() == 15 and (ehp > 0).all()          # draw: enemy survives
+
+
+def test_rush_check_ignores_temporary_leech():
+    policy = make_policy()
+    state = make_state(hp=582, bag=KIT, controls=("rush", "down", "extract"))
+    state["run"]["floor"] = 1225
+    state["player"]["secondary"]["leech"] = 0.28          # 6% set + 22% 虹吸滴管 buff
+    assert policy.lasting_build(state).leech == AFFIXES.leech

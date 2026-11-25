@@ -19,6 +19,7 @@ _GROWTH = {  # (a, b, c) per stat: value = a + b*x + c*z
     "boss": {"hp": (198, 2.6, 7.1), "atk": (30.5, 0.21, 0.58), "def": (4.4, 0.095, 0.33), "agi": (9, 0.12, 0.8)},
 }
 BOSS_WINDOW, BOSS_HEAVY = 4, 1.26
+REGULAR_ROUND_CAP = 15  # observed: a non-boss fight ends in a draw after 15 rounds (no kill, no kill-heal)
 # Approximate floor mix observed in the Mall (per non-boss floor).
 P_MOB, P_ELITE = 0.23, 0.14
 
@@ -114,7 +115,7 @@ TEMP_GEAR = {
 
 
 def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: bool,
-          ehp: np.ndarray | None = None, start_round: int = 1, rounds: int = 80,
+          ehp: np.ndarray | None = None, start_round: int = 1, rounds: int = REGULAR_ROUND_CAP,
           last_stand: np.ndarray | None = None, rng: np.random.Generator) -> tuple:
     """Vectorised fight over N parallel samples. Returns (hp, shield, ehp, last_stand, rounds_used).
 
@@ -288,7 +289,7 @@ def _need_hp(build: Build, kind: str, floor: int, map_id: str, risk: float) -> f
     for frac in np.arange(0.05, 1.0001, 0.05):
         hp = np.full(n, frac * build.hp)
         out, *_ = fight(build, hp, np.zeros(n), foe, boss=(kind == "boss"),
-                        rounds=BOSS_WINDOW if kind == "boss" else 80, rng=rng)
+                        rounds=BOSS_WINDOW if kind == "boss" else REGULAR_ROUND_CAP, rng=rng)
         if (out <= 0).mean() <= risk:
             return frac * build.hp
     return build.hp + 1  # cannot be made safe: heal anyway
