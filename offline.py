@@ -112,6 +112,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
         "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off",
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
+    farmer.cal.path = os.path.join(out_dir, "calibration.json")   # never touch the live calibration
     farmer.policy._affix_build, farmer.policy._loadout = CHARACTER_AFFIXES, ()   # no gear in the local db
     farmer.policy.missing_collectibles = lambda _state: set()   # the live account owns every non-rainbow item
     farmer.run()
