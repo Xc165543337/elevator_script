@@ -95,9 +95,33 @@ function csvCell(v: unknown): string {
 }
 
 export function historyCsv(rows: HistoryRow[]): string {
-    const head = ['time', 'mode', 'map', 'floor', 'bosses', 'rainbows', 'steps', 'seconds', 'outcome', 'summary']
+    const head = [
+        'time',
+        'mode',
+        'policy',
+        'map',
+        'floor',
+        'bosses',
+        'rainbows',
+        'steps',
+        'seconds',
+        'outcome',
+        'summary'
+    ]
     const lines = rows.map(r =>
-        [r.time, r.mode, r.map, r.floor, r.bosses, r.rainbows.join('|'), r.steps, r.seconds, r.outcome, r.summary]
+        [
+            r.time,
+            r.mode,
+            r.policy ?? 'threshold',
+            r.map,
+            r.floor,
+            r.bosses,
+            r.rainbows.join('|'),
+            r.steps,
+            r.seconds,
+            r.outcome,
+            r.summary
+        ]
             .map(csvCell)
             .join(',')
     )
@@ -172,7 +196,7 @@ export function mountPanel(): void {
         form.append(wrap)
     }
 
-    function select<K extends 'mode' | 'map'>(key: K, label: string, options: [string, string][]): void {
+    function select<K extends 'mode' | 'policy' | 'map'>(key: K, label: string, options: [string, string][]): void {
         const el = h('select')
         for (const [value, caption] of options) el.append(h('option', { value, textContent: caption }))
         el.value = settings[key]
@@ -228,6 +252,10 @@ export function mountPanel(): void {
     select('mode', '模式', [
         ['sim', '练习（免费，无收益）'],
         ['real', '正式（消耗门票与金币）']
+    ])
+    select('policy', '决策', [
+        ['threshold', '阈值规则'],
+        ['markov', '马尔可夫（后台求解约 5 分钟、内存约 600 MB；求解完成前用阈值规则）']
     ])
     number('runs', '局数', { min: 1 })
     select('map', '地图', MAPS)

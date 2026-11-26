@@ -54,6 +54,11 @@ export function fightSegment(foe: Foe): [number, number] {
     return [fought + 1, Math.max(1, end - fought)]
 }
 
+/** 现在开始的这一段是否在精英整备处结束（之后继续战斗） */
+export function pausesAfterSegment(foe: Foe): boolean {
+    return Boolean(foe.elite && !foe.boss && Number(foe.rounds_fought || 0) < ELITE_BREAK)
+}
+
 export function bossIndex(floor: number): number {
     const fixed: Record<number, number> = { 8: 1, 18: 2, 30: 3 }
     return fixed[floor] || 3 + Math.floor((floor - 30) / 20)

@@ -26,7 +26,7 @@ export const COMBAT_ONLY = new Set(['field_surgery'])
 /** 服务器同时最多允许三个限层增益 */
 const MAX_DURATION_BUFFS = 3
 /** 局内要用的补给留在背包，永不锁入安全箱 */
-const KEEP_IN_BAG = new Set([
+export const KEEP_IN_BAG = new Set([
     ...Object.keys(SUPPLY_HEAL),
     'adrenaline',
     'grenade',
@@ -132,7 +132,12 @@ export interface Decision {
     estimate?: FightEstimate
 }
 
-const decision = (command: string, params: Record<string, unknown>, reason: string, est?: FightEstimate): Decision => ({
+export const decision = (
+    command: string,
+    params: Record<string, unknown>,
+    reason: string,
+    est?: FightEstimate
+): Decision => ({
     command,
     params,
     reason,
@@ -144,12 +149,12 @@ function pctOf(text: string, pattern: RegExp): number {
     return m ? Number(m[1]) / 100 : 0
 }
 
-function controlsOf(state: Json): Map<string, Json> {
+export function controlsOf(state: Json): Map<string, Json> {
     return new Map(((state.controls || []) as Json[]).map(c => [c.command, c]))
 }
 
 /** 参数的稳定键（与 Python 的 repr(sorted(params.items())) 作用相同） */
-function paramsKey(params: Record<string, unknown>): string {
+export function paramsKey(params: Record<string, unknown>): string {
     return JSON.stringify(Object.entries(params).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
 }
 
@@ -191,7 +196,7 @@ export function relicValue(event: Json): number {
 export class BossFarmPolicy {
     readonly cfg: PolicyConfig
     /** 服务器拒绝过的 (楼层, 命令, 参数)；该楼层不再提出 */
-    private banned = new Set<string>()
+    protected banned = new Set<string>()
     /** 本局服务器提示奇遇攻击加成已达上限（+60%） */
     eventAtkCapped = false
     adrenalineUsed = 0
@@ -238,11 +243,11 @@ export class BossFarmPolicy {
         if (itemId === 'adrenaline') this.adrenalineUsed = this.cfg.startAdrenaline
     }
 
-    private itemBlocked(run: Json, itemId: string): boolean {
+    protected itemBlocked(run: Json, itemId: string): boolean {
         return run.floor <= (this.blockedUntil.get(itemId) ?? -1)
     }
 
-    private allowed(floor: number, command: string, params: Record<string, unknown>): boolean {
+    protected allowed(floor: number, command: string, params: Record<string, unknown>): boolean {
         return !this.banned.has(`${floor}|${command}|${paramsKey(params)}`)
     }
 
@@ -381,7 +386,7 @@ export class BossFarmPolicy {
         return null
     }
 
-    private static bagItem(run: Json, itemId: string): Json | null {
+    protected static bagItem(run: Json, itemId: string): Json | null {
         return ((run.bag || []) as Json[]).find(it => it.id === itemId) ?? null
     }
 
@@ -401,7 +406,7 @@ export class BossFarmPolicy {
         throw new AgentError(`第 ${floor} 层所有操作都被拒绝`)
     }
 
-    private decideRaw(state: Json): Decision {
+    protected decideRaw(state: Json): Decision {
         const run = state.run
         const ctr = controlsOf(state)
         if (!isEmpty(run.field_offer)) return this.fieldOffer(run)
@@ -538,7 +543,7 @@ export class BossFarmPolicy {
         return null
     }
 
-    private fightDecision(state: Json, ctr: Map<string, Json>): Decision {
+    protected fightDecision(state: Json, ctr: Map<string, Json>): Decision {
         const run = state.run
         const foe = run.event.enemy
         const boss = Boolean(foe.boss)
@@ -677,7 +682,7 @@ export class BossFarmPolicy {
         return BossFarmPolicy.fieldHeals(run).length > 0 || BossFarmPolicy.bagHeals(run, true).length > 0
     }
 
-    private advance(state: Json, ctr: Map<string, Json>): Decision {
+    protected advance(state: Json, ctr: Map<string, Json>): Decision {
         const run = state.run
         if (this.cfg.maxFloor && run.floor >= this.cfg.maxFloor && ctr.has('extract')) {
             return decision('extract', {}, `已到最高层 ${this.cfg.maxFloor}`)

@@ -31,6 +31,8 @@ export const DEFAULT_LOADOUT = [
 export interface Settings {
     /** sim = 练习（免费、无收益）；real = 正式（消耗门票与金币） */
     mode: 'sim' | 'real'
+    /** threshold = 手调规则（policy.ts）；markov = 求解的马尔可夫决策过程（markov.ts，后台求解约 5 分钟） */
+    policy: 'threshold' | 'markov'
     map: string
     runs: number
     /** 到达即撤离；null = 不限 */
@@ -50,6 +52,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
     mode: 'sim',
+    policy: 'threshold',
     map: 'mall',
     runs: 1,
     maxFloor: null,
@@ -84,6 +87,8 @@ export function normalizeSettings(saved: unknown): Settings {
                 out.maxFloor = value
         } else if (key === 'mode') {
             if (value === 'sim' || value === 'real') out.mode = value
+        } else if (key === 'policy') {
+            if (value === 'threshold' || value === 'markov') out.policy = value
         } else if (key === 'map') {
             if (typeof value === 'string' && MAPS.some(([id]) => id === value)) out.map = value
         } else if (typeof value === typeof def && (typeof value !== 'number' || Number.isFinite(value))) {

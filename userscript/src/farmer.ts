@@ -11,9 +11,11 @@ import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
 import { int } from './format.ts'
 import { floorMix, MIX_KINDS, parseFloorOdds } from './model.ts'
+import { DEFAULT_MARKOV, MarkovPolicy, Planner } from './markov.ts'
 import { AgentError, BossFarmPolicy } from './policy.ts'
 import type { Decision } from './policy.ts'
 import { parseList, parseLoadout } from './settings.ts'
+import { slicedSolver } from './solver.ts'
 import type { Settings } from './settings.ts'
 import { load, save } from './storage.ts'
 import type { Json } from './types.ts'
@@ -25,6 +27,9 @@ const TRACE_LIMIT = 500
 const HISTORY_LIMIT = 2000
 
 export type LogLevel = 'info' | 'good' | 'warn' | 'error'
+
+/** 马尔可夫价值表在页面内跨多次「开始」共用（求解约 5 分钟），首次需要时创建 */
+let sharedPlanner: Planner | null = null
 
 export interface Progress {
     running: boolean
@@ -58,6 +63,8 @@ export interface RunSummary {
 export interface HistoryRow extends RunSummary {
     time: string
     mode: string
+    /** 旧记录没有此字段 */
+    policy?: string
     map: string
 }
 
@@ -141,10 +148,7 @@ export class Farmer {
         this.client = client ?? new ElevatorClient()
         // 浏览器中尚无校准数据时，从 Python 版的 calibration.json 起步（构建时打包进脚本）
         this.cal = new Calibration(load<Partial<CalibrationData>>('calibration', DEFAULT_CALIBRATION))
-        this.policy = new BossFarmPolicy(this.cal, {
-            maxFloor: settings.maxFloor,
-            balanceGearScore: settings.balanceGearScore
-        })
+        this.policy = this.createPolicy()
         this.tally = this.freshTally()
         this.progress = {
             running: false,
@@ -158,6 +162,15 @@ export class Farmer {
             totalBosses: 0,
             rainbows: []
         }
+    }
+
+    /** 按设置选择决策策略（测试可覆盖） */
+    protected createPolicy(): BossFarmPolicy {
+        const config = { maxFloor: this.settings.maxFloor, balanceGearScore: this.settings.balanceGearScore }
+        if (this.settings.policy !== 'markov') return new BossFarmPolicy(this.cal, config)
+        sharedPlanner ??= new Planner(DEFAULT_MARKOV, slicedSolver())
+        sharedPlanner.log = msg => this.log(msg)
+        return new MarkovPolicy(this.cal, config, {}, sharedPlanner)
     }
 
     // ------------------------------------------------------------- 控制
@@ -535,16 +548,20 @@ export class Farmer {
     /** 打到本局结束；计数保存在 tally 中，续局后仍然有效 */
     private async playRun(): Promise<RunSummary> {
         const t = this.tally
+        let preview: Json | null = null // 「为了我所期待的」的预览在命令结果里返回，不在状态里
         while (this.client.state?.run) {
             this.checkStop()
             await this.ensurePursuit()
-            const state = this.client.state
+            const state = preview ? { ...this.client.state, wish_preview: preview } : this.client.state
             const run = state.run
             const floor = (t.floor = run.floor)
             this.emit({ floor, hp: run.hp, maxHp: run.max_hp, bosses: t.bosses })
             this.checkFloorOdds(run)
+            // 马尔可夫：为当前 Build 在后台准备价值表（不等待；就绪前沿用阈值规则或旧表）
+            if (this.policy instanceof MarkovPolicy) void this.policy.prepare(state)
             const d: Decision = this.policy.decide(state)
-            const rawFoe = d.command === 'fight' ? (run.event || {}).enemy : null
+            const killing = d.command === 'fight' || d.command === 'wish_confirm' // 确认发动后直接击杀敌人
+            const rawFoe = killing ? (run.event || {}).enemy : null
             const foe = rawFoe ? battleEnemy(state, rawFoe) : null
             const fighter = foe ? this.policy.currentBuild(state) : null
             let data: Json
@@ -563,6 +580,7 @@ export class Farmer {
             }
             t.steps += 1
             const result = data.result || {}
+            preview = result.wish_preview || null
             this.policy.note(result.limit_notices || [])
             const battle = result.battle
             if (foe && fighter && battle?.log) {
@@ -633,7 +651,13 @@ export class Farmer {
 
     private record(summary: RunSummary): void {
         const rows = load<HistoryRow[]>('history', [])
-        rows.push({ time: new Date().toISOString(), mode: this.settings.mode, map: this.settings.map, ...summary })
+        rows.push({
+            time: new Date().toISOString(),
+            mode: this.settings.mode,
+            policy: this.settings.policy,
+            map: this.settings.map,
+            ...summary
+        })
         save('history', rows.slice(-HISTORY_LIMIT))
     }
 
