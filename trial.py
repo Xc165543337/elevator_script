@@ -142,14 +142,15 @@ ITEM_WORTH = 40.0       # an unused buff / shield / grenade, in HP
 
 
 def signature(state: dict) -> dict:
-    """What the replay compares after every move: the live run must match the planned one exactly."""
+    """What the replay compares after every move: the live run must match the planned one exactly.
+    JSON-stable (lists, not tuples): the route stores it as JSON."""
     run = state.get("run")
     if not run:
         return {"over": True}
     enemy = (run.get("event") or {}).get("enemy") or {}
     return {"floor": run["floor"], "hp": run["hp"], "max_hp": run["max_hp"], "kind": (run.get("event") or {}).get("kind"),
             "enemy_hp": enemy.get("hp"), "bag": sorted(it.get("id") for it in run.get("bag") or []),
-            "field": sorted((it.get("id"), it.get("quantity", 0)) for it in run.get("field") or [])}
+            "field": sorted([it.get("id"), it.get("quantity", 0)] for it in run.get("field") or [])}
 
 
 def value(state: dict) -> float:
@@ -427,7 +428,7 @@ def replay(live: LiveTrial, route: dict, log=print, trace=None) -> dict:
     diverged = None
     for i, move in enumerate(route["moves"]):
         data = live.call(move["command"], move["params"])
-        got = signature(live.state)
+        got = json.loads(json.dumps(signature(live.state)))
         if trace is not None:
             trace.write(json.dumps({"i": i, "move": move, "got": got,
                                     "summary": (data.get("result") or {}).get("summary", "")}, ensure_ascii=False) + "\n")
@@ -476,7 +477,8 @@ def main() -> None:
         with open(args.route, encoding="utf-8") as fh:
             route = json.load(fh)
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        with open(os.path.join(os.path.dirname(args.route), f"replay_{stamp}.jsonl"), "w", encoding="utf-8") as trace:
+        path = os.path.join(os.path.dirname(args.route), f"replay_{stamp}.jsonl")
+        with open(path, "w", encoding="utf-8", buffering=1) as trace:
             replay(LiveTrial(client, args.delay, print), route, trace=trace)
         return
     os.makedirs(args.out, exist_ok=True)

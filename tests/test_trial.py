@@ -4,6 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json  # noqa: E402
+
 import pytest  # noqa: E402
 
 import trial  # noqa: E402
@@ -54,12 +56,14 @@ class FakeLive:
 
 
 def _route(states):
-    return {"week": "2026-W48", "moves": [{"floor": s["run"]["floor"] if s.get("run") else 0, "command": "down",
-                                           "params": {}, "expect": trial.signature(s)} for s in states[1:]]}
+    route = {"week": "2026-W48", "moves": [{"floor": s["run"]["floor"] if s.get("run") else 0, "command": "down",
+                                            "params": {}, "expect": trial.signature(s)} for s in states[1:]]}
+    return json.loads(json.dumps(route))   # as replay reads it from route.json
 
 
 def test_replay_follows_a_matching_route_to_the_end():
-    states = [run_state(floor=f) for f in (1, 2, 3)] + [{"run": None, "last_departure": {"floor": 3}}]
+    field = [{"id": "field_foil", "quantity": 1}]          # tuples vs JSON lists once broke this
+    states = [run_state(floor=f, field=field) for f in (1, 2, 3)] + [{"run": None, "last_departure": {"floor": 3}}]
     live = FakeLive(states)
     out = trial.replay(live, _route(states), log=lambda _m: None)
     assert out["diverged"] is None and live.sent == ["prophecy_start", "down", "down", "down"]
