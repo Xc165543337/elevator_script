@@ -300,6 +300,37 @@ def fight(build: Build, hp: np.ndarray, shield: np.ndarray, foe: dict, *, boss: 
     return hp, shield, ehp, ls, used
 
 
+def boss_win_chance(build: Build, foe: dict, *, ehp: float | None = None, start_round: int = 1, samples: int = 600,
+                    max_windows: int = 80, rng: np.random.Generator | None = None) -> float:
+    """Chance to kill a boss when healing to full before every window, with heals never running out: an
+    optimistic bound that tells a beatable boss from a wall. foe["hp"] is its full HP, `ehp` what is left."""
+    rng = rng or np.random.default_rng(0)
+    left = np.full(samples, float(foe["hp"] if ehp is None else ehp))
+    alive = np.ones(samples, dtype=bool)
+    first = start_round
+    for _ in range(max_windows):
+        going = alive & (left > 0)
+        if not going.any():
+            break
+        rounds = BOSS_WINDOW - (first - 1) % BOSS_WINDOW
+        hp, _, after, *_ = fight(build, np.full(samples, float(build.hp)), np.zeros(samples), foe, boss=True,
+                                 ehp=left, start_round=first, rounds=rounds, rng=rng)
+        alive &= ~(going & (hp <= 0))
+        left = np.where(going & alive, after, left)
+        first += rounds
+    return float((alive & (left <= 0)).mean())
+
+
+def next_boss_floors(floor: int, count: int) -> list[int]:
+    """The next `count` boss floors above `floor`."""
+    out, g = [], floor + 1
+    while len(out) < count:
+        if is_boss_floor(g):
+            out.append(g)
+        g += 1
+    return out
+
+
 @dataclass
 class RunResult:
     bosses: float

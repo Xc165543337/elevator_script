@@ -84,7 +84,9 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
   another player's run; local-group bags are preferred 80/20 over other groups'.
 - The secondary stats (`player.secondary`) are server totals with their sources; newer servers add
   `mitigation` (打击减伤) and a `condition` block (guard, depth shred, enemy cracks, damage multiplier).
-- Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled normally.
+- Flee chance is shown in the control label (e.g. `脱战 · 64%`) and drops with depth. Bosses and extraction ambushers cannot be fled. Against a boss you can extract (offered during the
+  fight) or use a smoke bomb, which ends the run as a successful extraction (bag and safe box kept);
+  against an extraction ambusher a smoke bomb also extracts.
 - Extraction ambush on harder maps (e.g. Zenith 39% from F4) unless the floor's monster was killed.
 - Full combat/drop/monster-growth formulas: `docs/formulas_zh.txt`. Item/map/affix reference: `docs/game_guide_zh.txt`.
 - **Simulation mode** (`simulate`): free, uses real gear/stats, grants a starter kit, no loot kept, not ranked. Safe sandbox for testing policies.

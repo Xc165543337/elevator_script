@@ -29,7 +29,8 @@ from field import FieldPrep
 from mdp import (BOSS_WINDOWS, FIELD_HEALS, SHOP_HEALS, HealItem, MdpConfig, ValueTables, _Closure,
                  elite_pause_kernel, elite_pause_value, flee_chance, flee_hit, interp_matrix, load_tables,
                  save_tables, solve, tables_key, with_calibration)
-from model import BOSS_WINDOW, Build, fight, fight_segment, pauses_after_segment
+from model import (BOSS_WINDOW, Build, boss_win_chance, fight, fight_segment, foe_at, next_boss_floors,
+                   pauses_after_segment)
 from policy import KEEP_IN_BAG, BossFarmPolicy, Decision, PolicyConfig
 
 WISH = "field_wish"   # 为了我所期待的
@@ -45,7 +46,11 @@ class MarkovConfig:
     prep_margin: float = 0.01       # a field buff / grenade (no budget price) must gain this many bosses
     prep_pairs: int = 3             # best single preparations combined pairwise (buff + buff synergies)
     prep_min_death: float = 0.001   # search field preparations only against regular fights at least this deadly
-    extract_below: float = 0.0      # extract once expected further bosses drop below this (0 = never)
+    # Extract once the expected further boss kills drop below this (0 = never): the run has hit a wall, and
+    # extracting (or a smoke bomb against a boss, which also ends the run as an extraction) banks the bag that
+    # a death would lose. Estimated optimistically (see _boss_outlook), so it only fires at a real wall.
+    extract_below: float = 0.3
+    outlook_bosses: int = 3         # bosses ahead that the expected-kills estimate chains
     live_samples: int = 300         # Monte Carlo fights per HP grid point for live evaluations
     pause_samples: int = 48         # live fights per (hp, elite hp) point when valuing the elite pause
     # 为了我所期待的 (one per run at F500, 0.1% per floor): kills the current enemy, wipes this run's loot.
@@ -185,6 +190,7 @@ class MarkovPolicy(BossFarmPolicy):
         self.planner = Planner(self.mcfg, log)
         self._rng = np.random.default_rng()
         self._wish_sent = False   # a wish preview was requested; confirm it on the next decision
+        self._boss_odds: dict[tuple, float] = {}   # (build, map, boss floor) -> boss_win_chance
 
     # ------------------------------------------------------------------ helpers
     def _calibrated(self, build: Build) -> Build:
@@ -312,6 +318,40 @@ class MarkovPolicy(BossFarmPolicy):
         death[0] = 1.0
         return value, death
 
+    def _boss_outlook(self, state: dict, floor: int) -> float:
+        """Expected boss kills ahead of `floor`, chaining the next bosses' win chances (P1 + P1 P2 + ...).
+        Each chance assumes a full heal before every window and the lasting build: an upper bound, so the
+        extraction it drives only fires when even perfect healing would not get past the coming bosses."""
+        build = quantize(self._calibrated(self.lasting_build(state)))
+        map_id = state["run"].get("map") or "mall"
+        total, chain = 0.0, 1.0
+        for boss_floor in next_boss_floors(floor, self.mcfg.outlook_bosses):
+            key = (build, map_id, boss_floor)
+            if key not in self._boss_odds:
+                self._boss_odds[key] = boss_win_chance(build, foe_at("boss", boss_floor, map_id, build))
+            chain *= self._boss_odds[key]
+            total += chain
+        return total
+
+    def _hopeless_boss(self, state: dict, ctr: dict, build: Build, enemy: dict, summary: str) -> Decision | None:
+        """Bank the bag instead of fighting a boss the build cannot realistically beat: extract (offered during
+        a boss fight), else a smoke bomb, which ends the run as an extraction too."""
+        run = state["run"]
+        if self.mcfg.extract_below <= 0 or self.greedy(run):
+            return None
+        win = boss_win_chance(build, {**enemy, "hp": float(enemy.get("max_hp") or enemy["hp"])},
+                              ehp=float(enemy["hp"]), start_round=int(enemy.get("rounds_fought") or 0) + 1)
+        outlook = win * (1.0 + self._boss_outlook(state, run["floor"]))
+        if outlook >= self.mcfg.extract_below:
+            return None
+        why = f"{summary}: win {win:.1%} even healing every window, expected bosses {outlook:.2f}"
+        if "extract" in ctr:
+            return Decision("extract", {}, f"{why} -> extract and bank the bag")
+        smoke = self._bag_item(run, "smoke")
+        if smoke is not None and self._allowed(run["floor"], "use", {"index": smoke["index"]}):
+            return Decision("use", {"index": smoke["index"]}, f"{why} -> smoke out (ends the run as an extraction)")
+        return None
+
     def _elite_pause(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict) -> np.ndarray:
         """Values at the coming elite pause under price index li, [hp point, elite-hp point]: heals from
         the live inventory, then the remaining rounds against this elite. Guard / burst charges are
@@ -358,6 +398,10 @@ class MarkovPolicy(BossFarmPolicy):
         death = float(np.interp(e, grid, death_curve))
         tag = f"{kind} {enemy.get('name')}"
         summary = f"{tag}: death {death:.1%}, lam {lam:g}, stock {stock:.1f}, smoke {smokes} @ {mu:g}"
+        if boss:
+            bank = self._hopeless_boss(state, ctr, build, enemy, summary)
+            if bank:
+                return bank
 
         # options that do not consume a priced heal: fight now, flee, field buffs, grenade
         curve = fight_curve
@@ -474,9 +518,11 @@ class MarkovPolicy(BossFarmPolicy):
         q_step = float(np.interp(e, grid, tables.step[g][li]))
         q_rush = float(np.interp(e, grid, tables.rush[g][li]))
         summary = f"step {q_step:.2f} rush {q_rush:.2f}, lam {lam:g}, stock {stock:.1f}"
-        if (self.mcfg.extract_below > 0 and "extract" in ctr and not self.greedy(run)
-                and max(q_step, q_rush) < self.mcfg.extract_below):
-            return Decision("extract", {}, f"{summary}: below {self.mcfg.extract_below} expected bosses -> extract")
+        if self.mcfg.extract_below > 0 and "extract" in ctr and not self.greedy(run):
+            outlook = self._boss_outlook(state, g)
+            if outlook < self.mcfg.extract_below:
+                return Decision("extract", {}, f"{summary}: expected further bosses {outlook:.2f} < "
+                                              f"{self.mcfg.extract_below:g} -> extract and bank the bag")
         curve = np.maximum(tables.step[g][li], tables.rush[g][li])
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, self._heal_options(run, False))
         if option and q_heal > q_go + self.mcfg.heal_margin:

@@ -117,8 +117,12 @@ cached per build). The heal stock is a run-long budget: instead of tracking the 
 heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
 that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
 
-- No voluntary extraction (death and extraction both end the run; only bosses count). Collectible
-  banking still extracts; `MarkovConfig.extract_below` re-enables value-based extraction.
+- Extraction at a wall: once the expected further boss kills drop below `MarkovConfig.extract_below`
+  (0.3), the agent extracts and banks the bag a death would lose. The estimate chains the next three bosses'
+  win chances with a full heal before every window (optimistic), so it fires only when even perfect healing
+  cannot get past them (with the B06 build: around F2800-2900). A boss that hopeless is not fought: the agent
+  extracts (offered during a boss fight) or uses a smoke bomb, which also ends the run as an extraction.
+  A doll in the bag disables this (it saves the bag anyway). Collectible banking extracts as before.
 - A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
   the encounter instead.
 - Rush is chosen while it gives up at most `rush_tolerance` (0.002) expected bosses against single steps.

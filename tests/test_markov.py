@@ -349,3 +349,34 @@ def test_wish_is_not_used_when_a_full_heal_makes_the_window_safe(policy):
     s["run"]["bag"] = bag_of("field_surgery")                       # heals to full in combat
     s["controls"].append({"command": "use", "params": {}, "label": "use"})
     assert policy.decide(s).params != {"id": "field_wish"}
+
+
+# ------------------------------------------------------------------ extraction at a wall
+def test_boss_win_chance_tells_a_wall_from_an_easy_boss():
+    from model import boss_win_chance
+    easy = {"hp": 300, "atk": 30, "def": 5, "agi": 10}
+    wall = {"hp": 10**6, "atk": 5000, "def": 500, "agi": 55}
+    assert boss_win_chance(BUILD, easy, samples=200) > 0.99
+    assert boss_win_chance(BUILD, wall, samples=200) == 0.0
+
+
+def test_extracts_between_floors_when_the_coming_bosses_are_a_wall(policy):
+    s = state(hp=666, bag=bag_of("coffee"), controls=("rush", "down", "extract"))
+    policy._boss_outlook = lambda _state, _floor: 0.1
+    assert policy.decide(s).command == "extract"
+    policy._boss_outlook = lambda _state, _floor: 2.0
+    assert policy.decide(s).command != "extract"
+
+
+def test_keeps_going_with_a_doll_in_the_bag(policy):
+    s = state(hp=666, bag=bag_of("coffee", "doll"), controls=("rush", "down", "extract"))
+    policy._boss_outlook = lambda _state, _floor: 0.1
+    assert policy.decide(s).command != "extract"
+
+
+def test_banks_the_bag_instead_of_fighting_a_hopeless_boss(policy):
+    wall = {**foe("boss", 170), "hp": 10**6, "max_hp": 10**6, "atk": 5000}
+    s = state(floor=170, hp=666, foe=wall, bag=bag_of("coffee", "smoke"), controls=("fight", "use", "extract"))
+    assert policy.decide(s).command == "extract"
+    s["controls"] = [c for c in s["controls"] if c["command"] != "extract"]
+    assert policy.decide(s).command == "use"                               # smoke: ends the run as an extraction
