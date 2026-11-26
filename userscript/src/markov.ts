@@ -80,6 +80,8 @@ export interface MarkovConfig {
     wishMaxLoot: number
     /** 属性相对变化超过此值才重新求解（实时战斗始终用准确的 Build） */
     buildTolerance: number
+    /** 求解用的 Build 按此步长吸附到几何网格（bucket），相近的 Build 共用一次求解；实时战斗仍用准确的 Build */
+    bucket: number
     mdp: MdpConfig
 }
 
@@ -99,6 +101,7 @@ export const DEFAULT_MARKOV: MarkovConfig = {
     wishMinDeath: 0.05,
     wishMaxLoot: 15_000_000,
     buildTolerance: 0.1,
+    bucket: 0.05,
     mdp: DEFAULT_MDP
 }
 
@@ -191,6 +194,35 @@ export function quantize(b: Build): Build {
     }
 }
 
+const WORSE_WHEN_HIGHER = new Set(['takenMult'])
+const WHOLE = new Set(['hp', 'atk', 'defense', 'agi', 'luk'])
+
+/** 不高于 x（up 时不低于 x）的网格点 (1 + step)^k；整数属性的网格点取整，取整后的网格点映射到自身 */
+function snap(x: number, step: number, up: boolean, whole: boolean): number {
+    const ratio = Math.log1p(step)
+    const point = (k: number) => (whole ? Math.round(Math.exp(k * ratio)) : Math.exp(k * ratio))
+    let k = Math.floor(Math.log(x) / ratio)
+    if (up) {
+        while (point(k) < x) k++
+        while (point(k - 1) >= x) k--
+    } else {
+        while (point(k + 1) <= x) k++
+        while (point(k) > x) k--
+    }
+    return point(k)
+}
+
+/** 每个正数按保守方向（向下；承受伤害向上）吸附到网格 (1 + step)^k，相差几个百分点的 Build 共用价值表（同 Python 版 bucket） */
+export function bucket(b: Build, step: number): Build {
+    if (step <= 0) return b
+    const out: Record<string, unknown> = { ...b }
+    for (const [key, x] of Object.entries(b)) {
+        if (typeof x !== 'number' || x <= 0) continue
+        out[key] = snap(x, step, WORSE_WHEN_HIGHER.has(key), WHOLE.has(key))
+    }
+    return out as unknown as Build
+}
+
 /** 两个 Build 在相对容差内相同（如在线校准的漂移） */
 export function closeBuilds(a: Build, b: Build, tol: number): boolean {
     for (const key of Object.keys(a) as (keyof Build)[]) {
@@ -231,7 +263,7 @@ export class Planner {
         if (this.pending && this.pendingMap === mapId && closeBuilds(this.pendingBuild!, build, tol))
             return this.pending
         if (this.pending) return this.pending // 一次只解一套；完成后的下一次请求会按新 Build 再解
-        const target = quantize(build)
+        const target = bucket(quantize(build), this.cfg.bucket)
         this.pendingBuild = target
         this.pendingMap = mapId
         this.log(

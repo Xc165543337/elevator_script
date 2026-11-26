@@ -94,8 +94,8 @@ class Farmer:
                               relic_loot_value=args.relic_loot_value, rush_elites=args.rush_elites == "on",
                               rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
         if args.policy == "markov":
-            self.policy = MarkovPolicy(self.cal, config, MarkovConfig(cache_dir=os.path.join(HERE, "cache")),
-                                       log=self.log)
+            markov = MarkovConfig(cache_dir=os.path.join(HERE, "cache"), background=args.solve == "background")
+            self.policy = MarkovPolicy(self.cal, config, markov, log=self.log)
         else:
             self.policy = BossFarmPolicy(self.cal, config)
         self.focus: list[str] | None = None   # blessing sets pursued by the current real run
@@ -505,6 +505,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--relic-loot-value", type=int, default=PolicyConfig.relic_loot_value,
                     help="loot (舔包) fallen players' bags worth at least this much gold instead of returning them "
                          "for the bounty; loot that valuable which the safe box cannot hold is banked by extracting")
+    ap.add_argument("--solve", choices=("background", "blocking"), default="background",
+                    help="markov: solve value tables in a background thread and keep playing on the previous ones "
+                         "(or the threshold rules) meanwhile; blocking = wait for every solve (reproducible)")
     ap.add_argument("--rush-elites", choices=("on", "off"), default="on",
                     help="let rushes fight elites by themselves (自动打精英) where the policy finds it as safe: "
                          "fewer stops per run; off = every rush stops at elites")

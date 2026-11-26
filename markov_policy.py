@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 from dataclasses import dataclass, field, fields, replace
 from typing import Callable
 
@@ -63,7 +64,12 @@ class MarkovConfig:
     wish_min_death: float = 0.05
     wish_max_loot: int = 15_000_000    # never wipe more run loot (bag + safe box) than this with a wish
     build_tolerance: float = 0.10   # relative stat drift before re-solving (the live fight always uses the exact build)
+    # Tables are solved for the build snapped down to a geometric grid with this step (bucket()), so that
+    # similar builds of different runs share one cached solve. The live fight still uses the exact build.
+    bucket: float = 0.05
+    background: bool = True         # solve in a thread and keep playing on the previous tables meanwhile
     cache_dir: str = "cache"
+    cache_max_files: int = 20       # least recently used solves beyond this are deleted (~55 MB each)
     mdp: MdpConfig = field(default_factory=MdpConfig)
 
 
@@ -135,30 +141,95 @@ def isotonic(y: np.ndarray) -> np.ndarray:
 
 
 class Planner:
-    """Value tables for the current build: in memory, then the disk cache, then a fresh solve."""
+    """Value tables for the current build: in memory, then the disk cache, then a solve.
+
+    A solve takes minutes, so by default it runs in a background thread: until it is done, tables()
+    returns the previous tables of this map, or None (the policy then plays by its threshold rules).
+    The live fight is always simulated with the exact build either way."""
 
     def __init__(self, cfg: MarkovConfig, log: Callable[[str], None] | None = None):
         self.cfg = cfg
         self.log = log or (lambda _msg: None)
         self._tables: ValueTables | None = None
+        self._lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._wanted: tuple[Build, str] | None = None   # latest solve asked for and not yet done
 
-    def tables(self, build: Build, map_id: str) -> ValueTables:
+    def tables(self, build: Build, map_id: str) -> ValueTables | None:
         current = self._tables
         if current is not None and current.map_id == map_id and self._close(current.build, build):
             return current
-        build = quantize(build)
-        key = tables_key(build, map_id, self.cfg.mdp)
-        path = os.path.join(self.cfg.cache_dir, f"mdp_{key}.npz")
-        if os.path.exists(path):
-            self._tables = load_tables(path, build, map_id, self.cfg.mdp)
-        else:
-            self.log(f"mdp: solving tables for {map_id} (atk {build.atk:.0f}, def {build.defense:.0f}, "
-                     f"agi {build.agi:.0f}, hp {build.hp:.0f})")
-            self._tables = solve(build, map_id, self.cfg.mdp, progress=self.log)
-            os.makedirs(self.cfg.cache_dir, exist_ok=True)
-            save_tables(self._tables, path)
-            self.log(f"mdp: solved in {self._tables.solve_seconds:.0f}s -> {path}")
-        return self._tables
+        target = bucket(quantize(build), self.cfg.bucket)
+        cached = self._load(target, map_id)
+        if cached is not None:
+            self._tables = cached
+            return cached
+        if not self.cfg.background:
+            self._tables = self._solve(target, map_id)
+            return self._tables
+        self._request(target, map_id)
+        return current if current is not None and current.map_id == map_id else None
+
+    def wait(self) -> None:
+        """Block until a background solve (if any) is done."""
+        worker = self._worker
+        if worker is not None:
+            worker.join()
+
+    def _path(self, build: Build, map_id: str) -> str:
+        return os.path.join(self.cfg.cache_dir, f"mdp_{tables_key(build, map_id, self.cfg.mdp)}.npz")
+
+    def _load(self, build: Build, map_id: str) -> ValueTables | None:
+        path = self._path(build, map_id)
+        if not os.path.exists(path):
+            return None
+        os.utime(path)   # most recently used: kept longest by _prune
+        return load_tables(path, build, map_id, self.cfg.mdp)
+
+    def _solve(self, build: Build, map_id: str) -> ValueTables:
+        self.log(f"mdp: solving tables for {map_id} (atk {build.atk:.0f}, def {build.defense:.0f}, "
+                 f"agi {build.agi:.0f}, hp {build.hp:.0f})")
+        tables = solve(build, map_id, self.cfg.mdp, progress=self.log)
+        os.makedirs(self.cfg.cache_dir, exist_ok=True)
+        path = self._path(build, map_id)
+        save_tables(tables, path)
+        self.log(f"mdp: solved in {tables.solve_seconds:.0f}s -> {path}")
+        self._prune()
+        return tables
+
+    def _request(self, build: Build, map_id: str) -> None:
+        with self._lock:
+            self._wanted = (build, map_id)
+            if self._worker is not None and self._worker.is_alive():
+                return              # the worker picks up the latest request when its solve is done
+            self._worker = threading.Thread(target=self._work, name="mdp-solve", daemon=True)
+            self._worker.start()
+
+    def _work(self) -> None:
+        while True:
+            with self._lock:
+                wanted, self._wanted = self._wanted, None
+            if wanted is None:
+                return
+            build, map_id = wanted
+            try:
+                tables = self._load(build, map_id) or self._solve(build, map_id)
+            except Exception as err:   # never take the farm down with it: keep the old tables
+                self.log(f"mdp: background solve failed: {err!r}")
+                return
+            self._tables = tables
+
+    def _prune(self) -> None:
+        """Keep the cache_max_files most recently used solves."""
+        try:
+            files = [os.path.join(self.cfg.cache_dir, n) for n in os.listdir(self.cfg.cache_dir)
+                     if n.startswith("mdp_") and n.endswith(".npz")]
+        except FileNotFoundError:
+            return
+        files.sort(key=os.path.getmtime, reverse=True)
+        for path in files[self.cfg.cache_max_files:]:
+            os.remove(path)
+            self.log(f"mdp: removed old cached tables {os.path.basename(path)}")
 
     def _close(self, a: Build, b: Build) -> bool:
         """Same build up to `build_tolerance` relative drift in any number (e.g. the online calibration)."""
@@ -171,6 +242,50 @@ class Planner:
             elif abs(x - y) > tol * max(abs(x), abs(y), 1.0):
                 return False
         return True
+
+
+# Higher is worse for these: rounded up by bucket(), everything else down.
+_WORSE_WHEN_HIGHER = frozenset({"taken_mult"})
+_WHOLE = frozenset({"hp", "atk", "defense", "agi", "luk"})   # whole numbers in the panel
+
+
+def _snap(x: float, step: float, up: bool, whole: bool) -> float:
+    """The grid point (1 + step)^k nearest to x from below (from above when `up`). Grid points of whole
+    stats are rounded, and a rounded grid point maps to itself."""
+    ratio = math.log1p(step)
+
+    def point(k: int) -> float:
+        v = math.exp(k * ratio)
+        return round(v) if whole else v
+
+    k = math.floor(math.log(x) / ratio)
+    if up:
+        while point(k) < x:
+            k += 1
+        while point(k - 1) >= x:
+            k -= 1
+    else:
+        while point(k + 1) <= x:
+            k += 1
+        while point(k) > x:
+            k -= 1
+    return point(k)
+
+
+def bucket(build: Build, step: float) -> Build:
+    """Snap every positive number to the grid (1 + step)^k in the conservative direction (down, or up
+    for damage taken), so that builds within a few percent of each other share cached tables."""
+    if step <= 0:
+        return build
+    changes = {}
+    for f in fields(Build):
+        x = getattr(build, f.name)
+        if isinstance(x, bool) or not isinstance(x, (int, float)) or x <= 0:
+            continue
+        changes[f.name] = _snap(float(x), step, f.name in _WORSE_WHEN_HIGHER, f.name in _WHOLE)
+        if f.name in _WHOLE:
+            changes[f.name] = int(changes[f.name])
+    return replace(build, **changes)
 
 
 def quantize(build: Build) -> Build:
@@ -204,7 +319,7 @@ class MarkovPolicy(BossFarmPolicy):
         if run["floor"] < self.mcfg.from_floor:
             return None
         tables = self.planner.tables(self._calibrated(self._table_build(state)), run.get("map") or "mall")
-        return tables if tables.in_range(run["floor"]) else None
+        return tables if tables is not None and tables.in_range(run["floor"]) else None
 
     def _table_build(self, state: dict) -> Build:
         """Build the tables are solved for: lasting_build without short boosts it cannot see as buffs,
