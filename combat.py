@@ -15,7 +15,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 import heirlooms
-from model import BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, fight, fight_segment, foe_at
+from model import (BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, LIVE_RULES, Build, ServerRules, fight, fight_segment,
+                   floor_mix, foe_at)
 
 BERSERK_CAP = 0.75
 
@@ -161,16 +162,32 @@ def estimate(build: Build, state: dict, cal: Calibration, samples: int = 600,
 
 
 def chain_risk(build: Build, state: dict, cal: Calibration, fights: int = 4, samples: int = 600,
-               map_id: str = "mall", rng: np.random.Generator | None = None) -> float:
+               map_id: str = "mall", rng: np.random.Generator | None = None, elites: bool = False,
+               rules: ServerRules = LIVE_RULES) -> float:
     """P(death) if the next `fights` floors each hold a normal monster, fought back to back with
-    no healing in between (what a rush does). Used to decide between rush and single steps."""
+    no healing in between (what a rush does). Used to decide between rush and single steps.
+    elites: a rush with 自动打精英 on - each fight is an elite with the floor's elite share of the
+    combats, fought up to its pause; an elite still standing there halts that sample's rush."""
     run = state["run"]
     rng = rng or np.random.default_rng()
     kp, ke = cal.conservative()
     tuned = replace(build, dealt_mult=build.dealt_mult * kp, taken_mult=build.taken_mult * ke)
     hp = np.full(samples, float(run["hp"]))
     shield = np.full(samples, float(run.get("shield") or 0))
+    going = np.ones(samples, dtype=bool)   # still rushing (elites only: a pause halts the rush)
     for k in range(1, fights + 1):
-        hp, shield, *_ = fight(tuned, hp, shield, foe_at("normal", run["floor"] + k, map_id, tuned), boss=False, rng=rng)
+        floor = run["floor"] + k
+        new_hp, new_shield, *_ = fight(tuned, hp, shield, foe_at("normal", floor, map_id, tuned), boss=False, rng=rng)
+        if elites:
+            mix = floor_mix(floor, rules)
+            elite = {**foe_at("elite", floor, map_id, tuned), "elite": True, "rounds_fought": 0}
+            first, rounds = fight_segment(elite, rules)
+            e_hp, e_shield, e_ehp, *_ = fight(tuned, hp, shield, elite, boss=False, start_round=first,
+                                              rounds=rounds, rng=rng)
+            met = going & (rng.random(samples) < mix["elite"] / (mix["elite"] + mix["normal"]))
+            new_hp, new_shield = np.where(met, e_hp, new_hp), np.where(met, e_shield, new_shield)
+        hp, shield = np.where(going, new_hp, hp), np.where(going, new_shield, shield)
+        if elites:
+            going &= ~(met & (e_ehp > 0))
         hp = np.where(hp <= 0, -1.0, hp)  # dead samples stay dead
     return float((hp <= 0).mean())

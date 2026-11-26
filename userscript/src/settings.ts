@@ -31,12 +31,16 @@ export const DEFAULT_LOADOUT = [
 export interface Settings {
     /** sim = 练习（免费、无收益）；real = 正式（消耗门票与金币） */
     mode: 'sim' | 'real'
+    /** threshold = 手调规则（policy.ts）；markov = 求解的马尔可夫决策过程（markov.ts，后台求解约 5 分钟） */
+    policy: 'threshold' | 'markov'
     map: string
     runs: number
     /** 到达即撤离；null = 不限 */
     maxFloor: number | null
     loadout: string
     restock: boolean
+    /** 模型判断同样安全时，连战开启「自动打精英」（每局停顿更少） */
+    rushElites: boolean
     buyTickets: boolean
     goldReserve: number
     /** 两次请求之间的最短间隔（秒） */
@@ -50,11 +54,13 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
     mode: 'sim',
+    policy: 'threshold',
     map: 'mall',
     runs: 1,
     maxFloor: null,
     loadout: DEFAULT_LOADOUT,
     restock: true,
+    rushElites: true,
     buyTickets: false,
     goldReserve: 1_000_000,
     delay: 0.05,
@@ -84,6 +90,8 @@ export function normalizeSettings(saved: unknown): Settings {
                 out.maxFloor = value
         } else if (key === 'mode') {
             if (value === 'sim' || value === 'real') out.mode = value
+        } else if (key === 'policy') {
+            if (value === 'threshold' || value === 'markov') out.policy = value
         } else if (key === 'map') {
             if (typeof value === 'string' && MAPS.some(([id]) => id === value)) out.map = value
         } else if (typeof value === typeof def && (typeof value !== 'number' || Number.isFinite(value))) {

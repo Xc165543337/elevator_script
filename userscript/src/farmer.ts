@@ -6,13 +6,16 @@
 // ============================================================================
 
 import DEFAULT_CALIBRATION from '../../calibration.json'
-import { Calibration } from './combat.ts'
+import { battleEnemy, Calibration } from './combat.ts'
 import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
 import { int } from './format.ts'
+import { floorMix, MIX_KINDS, parseFloorOdds } from './model.ts'
+import { DEFAULT_MARKOV, MarkovPolicy, Planner } from './markov.ts'
 import { AgentError, BossFarmPolicy } from './policy.ts'
 import type { Decision } from './policy.ts'
 import { parseList, parseLoadout } from './settings.ts'
+import { slicedSolver } from './solver.ts'
 import type { Settings } from './settings.ts'
 import { load, save } from './storage.ts'
 import type { Json } from './types.ts'
@@ -25,6 +28,9 @@ const HISTORY_LIMIT = 2000
 
 export type LogLevel = 'info' | 'good' | 'warn' | 'error'
 
+/** 马尔可夫价值表在页面内跨多次「开始」共用（求解约 5 分钟），首次需要时创建 */
+let sharedPlanner: Planner | null = null
+
 export interface Progress {
     running: boolean
     mode: string
@@ -36,6 +42,12 @@ export interface Progress {
     bosses: number
     totalBosses: number
     rainbows: string[]
+}
+
+function formatMix(mix: Record<string, number>): string {
+    return Object.entries(mix)
+        .map(([k, v]) => `${k} ${Math.round(v * 100)}%`)
+        .join(' ')
 }
 
 export interface RunSummary {
@@ -51,6 +63,8 @@ export interface RunSummary {
 export interface HistoryRow extends RunSummary {
     time: string
     mode: string
+    /** 旧记录没有此字段 */
+    policy?: string
     map: string
 }
 
@@ -120,6 +134,8 @@ export class Farmer {
         summary: string
         /** 开局时持有的闪耀祝福部件（用于统计本局掉落） */
         heirlooms: Record<string, number>
+        /** 本局已核对遭遇概率 */
+        oddsChecked: boolean
     }
     private progress: Progress
 
@@ -132,10 +148,7 @@ export class Farmer {
         this.client = client ?? new ElevatorClient()
         // 浏览器中尚无校准数据时，从 Python 版的 calibration.json 起步（构建时打包进脚本）
         this.cal = new Calibration(load<Partial<CalibrationData>>('calibration', DEFAULT_CALIBRATION))
-        this.policy = new BossFarmPolicy(this.cal, {
-            maxFloor: settings.maxFloor,
-            balanceGearScore: settings.balanceGearScore
-        })
+        this.policy = this.createPolicy()
         this.tally = this.freshTally()
         this.progress = {
             running: false,
@@ -149,6 +162,20 @@ export class Farmer {
             totalBosses: 0,
             rainbows: []
         }
+    }
+
+    /** 按设置选择决策策略（测试可覆盖） */
+    protected createPolicy(): BossFarmPolicy {
+        const config = {
+            maxFloor: this.settings.maxFloor,
+            balanceGearScore: this.settings.balanceGearScore,
+            rushElites: this.settings.rushElites
+        }
+        if (this.settings.policy !== 'markov') return new BossFarmPolicy(this.cal, config)
+        const markov = { ...DEFAULT_MARKOV, mdp: { ...DEFAULT_MARKOV.mdp, rushElites: config.rushElites } }
+        if (sharedPlanner?.cfg.mdp.rushElites !== config.rushElites) sharedPlanner = new Planner(markov, slicedSolver())
+        sharedPlanner.log = msg => this.log(msg)
+        return new MarkovPolicy(this.cal, config, markov, sharedPlanner)
     }
 
     // ------------------------------------------------------------- 控制
@@ -243,6 +270,35 @@ export class Farmer {
             }
         }
         throw new AgentError(`命令 ${command} 多次失败`)
+    }
+
+    /** 读取状态；服务器重启（HTTP 502 等）时每分钟重试，最多 30 分钟。游戏错误（如未登录）立即抛出 */
+    private async connect(attempts = 30): Promise<void> {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                await this.client.refresh()
+                return
+            } catch (err) {
+                if (!(err instanceof NetworkError) || attempt >= attempts) throw err
+                this.log(`服务器暂不可用（${err.message}），60 秒后重试`, 'warn')
+                await this.sleep(60_000)
+            }
+        }
+    }
+
+    /** 每局一次：比较页面显示的下一层遭遇概率与模型（2026-11-25 已改过一次），不一致时提示 */
+    private checkFloorOdds(run: Json): void {
+        const floor = run.floor + 1
+        const odds = parseFloorOdds(run.next_floor)
+        if (this.tally.oddsChecked || !odds || floor < 60) return
+        this.tally.oddsChecked = true
+        const model = floorMix(floor)
+        if (MIX_KINDS.some(k => Math.abs(odds[k] - model[k]) > 0.015)) {
+            this.log(
+                `F${floor} 遭遇概率与模型不一致：服务器 ${formatMix(odds)}，模型 ${formatMix(model)}；需要更新模型`,
+                'warn'
+            )
+        }
     }
 
     async safeRefresh(): Promise<boolean> {
@@ -392,7 +448,8 @@ export class Farmer {
     }
 
     /**
-     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）。
+     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）；
+     * 策略在同样安全的连战前自行开启「自动打精英」（设置「连战自动打精英」）。
      * 服务器未提供的设置（旧版本）保持不动。
      */
     private async ensureRushSettings(): Promise<void> {
@@ -478,7 +535,8 @@ export class Farmer {
             floor: 0,
             outcome: '',
             summary: '',
-            heirlooms: { ...this.client?.state?.heirlooms?.owned } as Record<string, number>
+            heirlooms: { ...this.client?.state?.heirlooms?.owned } as Record<string, number>,
+            oddsChecked: false
         }
     }
 
@@ -496,15 +554,21 @@ export class Farmer {
     /** 打到本局结束；计数保存在 tally 中，续局后仍然有效 */
     private async playRun(): Promise<RunSummary> {
         const t = this.tally
+        let preview: Json | null = null // 「为了我所期待的」的预览在命令结果里返回，不在状态里
         while (this.client.state?.run) {
             this.checkStop()
             await this.ensurePursuit()
-            const state = this.client.state
+            const state = preview ? { ...this.client.state, wish_preview: preview } : this.client.state
             const run = state.run
             const floor = (t.floor = run.floor)
             this.emit({ floor, hp: run.hp, maxHp: run.max_hp, bosses: t.bosses })
+            this.checkFloorOdds(run)
+            // 马尔可夫：为当前 Build 在后台准备价值表（不等待；就绪前沿用阈值规则或旧表）
+            if (this.policy instanceof MarkovPolicy) void this.policy.prepare(state)
             const d: Decision = this.policy.decide(state)
-            const foe = d.command === 'fight' ? (run.event || {}).enemy : null
+            const killing = d.command === 'fight' || d.command === 'wish_confirm' // 确认发动后直接击杀敌人
+            const rawFoe = killing ? (run.event || {}).enemy : null
+            const foe = rawFoe ? battleEnemy(state, rawFoe) : null
             const fighter = foe ? this.policy.currentBuild(state) : null
             let data: Json
             try {
@@ -512,12 +576,17 @@ export class Farmer {
             } catch (err) {
                 if (!(err instanceof GameError) || err.code !== 'invalid') throw err
                 this.log(`F${floor} ${d.command} ${JSON.stringify(d.params)} 被拒绝：${err.message}；重新选择`, 'warn')
-                this.policy.ban(floor, d)
+                const used =
+                    d.command === 'use'
+                        ? (((run.bag || []) as Json[]).find(it => it.index === d.params.index)?.id ?? null)
+                        : null
+                this.policy.ban(floor, d, used, err.message)
                 await this.client.refresh()
                 continue
             }
             t.steps += 1
             const result = data.result || {}
+            preview = result.wish_preview || null
             this.policy.note(result.limit_notices || [])
             const battle = result.battle
             if (foe && fighter && battle?.log) {
@@ -541,6 +610,7 @@ export class Farmer {
                 hp: run.hp,
                 stats: run.effective_stats,
                 dmg_mult: run.damage_multiplier,
+                condition: state.player?.secondary?.condition ?? null,
                 slots: run.field_slots,
                 enemy: (run.event || {}).enemy,
                 decision: d.command,
@@ -587,7 +657,13 @@ export class Farmer {
 
     private record(summary: RunSummary): void {
         const rows = load<HistoryRow[]>('history', [])
-        rows.push({ time: new Date().toISOString(), mode: this.settings.mode, map: this.settings.map, ...summary })
+        rows.push({
+            time: new Date().toISOString(),
+            mode: this.settings.mode,
+            policy: this.settings.policy,
+            map: this.settings.map,
+            ...summary
+        })
         save('history', rows.slice(-HISTORY_LIMIT))
     }
 
@@ -600,7 +676,7 @@ export class Farmer {
         const s = this.settings
         this.emit({ running: true, mode: s.mode, run: 0, runs: s.runs })
         try {
-            await this.client.refresh()
+            await this.connect()
             this.printStatus()
             if (action === 'status') return
             if (action === 'dedupe') {

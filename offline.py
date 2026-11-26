@@ -118,6 +118,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
     farm_args = build_parser().parse_args([
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
         "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", args.rules,
+        "--rush-elites", args.rush_elites, "--focus", args.focus,
         *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
@@ -136,6 +137,8 @@ def main() -> None:
     ap.add_argument("--policies", default="threshold,markov")
     ap.add_argument("--out", default=os.path.join(HERE, "logs", "offline"))
     ap.add_argument("--loadout", default=None, help="supplies to carry (farm.py format); default: farm.py's")
+    ap.add_argument("--rush-elites", choices=("on", "off"), default="on", help="see farm.py --rush-elites")
+    ap.add_argument("--focus", default="1,8", help="blessing sets a real run pursues (see farm.py --focus)")
     ap.add_argument("--rules", choices=("live", "legacy"), default="live",
                     help="server rules of the engine checkout: live (f21568b and later) or legacy (older)")
     args = ap.parse_args()

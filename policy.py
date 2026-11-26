@@ -48,6 +48,10 @@ class PolicyConfig:
     samples: int = 600
     start_adrenaline: int = 2           # 暴走肾上腺素 shots to use on F1 (max 2 stacks)
     max_rush_risk: float = 0.01         # max P(death) over 4 back-to-back normal fights to allow a rush
+    # let a rush fight elites by itself (server setting 自动打精英) when that is as safe: fewer stops and
+    # requests per run. The threshold policy needs the elite-inclusive chain risk within max_rush_risk; the
+    # Markov policy a loss of at most MarkovConfig.elite_rush_tolerance expected bosses.
+    rush_elites: bool = True
     swap_margin: float = 1.2            # swap loot into a full safe box only if worth >= margin x cheapest secured
     use_pouch: bool = False             # 哆啦的临时扩容袋 is precious: never use it (found ones go home)
     combat_topup_hp: float = 0.30       # with only combat-only heals left, use one in an encounter below this HP
@@ -129,6 +133,22 @@ class BossFarmPolicy:
         return (floor, command, repr(sorted(params.items()))) not in self.banned
 
     # ------------------------------------------------------------------ helpers
+    def _rush(self, state: dict, ctr: dict, auto_elite: bool, reason: str) -> Decision:
+        """Rush with the server's 自动打精英 setting as wanted, switching it first when it differs.
+        A server that does not report the setting is never asked to fight elites in a rush."""
+        player, floor = state.get("player") or {}, state["run"]["floor"]
+        if "rush_auto_elite" not in player:
+            return Decision("rush", {}, reason)
+        params = {"auto_elite": auto_elite}
+        if bool(player["rush_auto_elite"]) != auto_elite:
+            if self._allowed(floor, "rush_settings", params):
+                what = "fight elites in rushes" if auto_elite else "stop rushes at elites"
+                return Decision("rush_settings", params, f"{what} ({reason})")
+            if not auto_elite and "down" in ctr:   # cannot switch auto-fighting off: no blind elite fights
+                return Decision("down", {}, f"{reason}, but 自动打精英 cannot be switched off -> single step")
+            auto_elite = bool(player["rush_auto_elite"])
+        return Decision("rush", {}, reason + (" with elites" if auto_elite else ""))
+
     def current_build(self, state: dict) -> Build:
         """Live combat build; permanent affixes are derived once per equipped loadout."""
         loadout = tuple(sorted((state["player"].get("loadout") or {}).items()))
@@ -526,15 +546,20 @@ class BossFarmPolicy:
                 why = "only combat-only heals left" if combat_only else "no heals"
                 return Decision("down", {}, f"low HP {hp_frac:.0%}, {why}: single step so an encounter allows healing")
         if "rush" in ctr:
-            risk = chain_risk(self.lasting_build(state), state, self.cal, samples=self.cfg.samples,
-                              map_id=run.get("map") or "mall")
+            build, map_id = self.lasting_build(state), run.get("map") or "mall"
+            risk = chain_risk(build, state, self.cal, samples=self.cfg.samples, map_id=map_id)
             if risk <= self.cfg.max_rush_risk:
-                return Decision("rush", {}, f"rush (chain risk {risk:.1%})")
+                if self.cfg.rush_elites and "rush_auto_elite" in (state.get("player") or {}):
+                    elite_risk = chain_risk(build, state, self.cal, samples=self.cfg.samples, map_id=map_id,
+                                            elites=True, rules=self.cfg.rules)
+                    auto = elite_risk <= self.cfg.max_rush_risk
+                    return self._rush(state, ctr, auto, f"rush (chain risk {risk:.1%}, with elites {elite_risk:.1%})")
+                return self._rush(state, ctr, False, f"rush (chain risk {risk:.1%})")
             heal = self._best_heal(run, in_combat=False, force=True)
             if heal and hp_frac < 0.95:
                 heal.reason = f"rush chain risk {risk:.1%} -> {heal.reason}"
                 return heal
             if "down" in ctr:
                 return Decision("down", {}, f"chain risk {risk:.1%}: single step so each fight can be prepared")
-            return Decision("rush", {}, f"rush (risk {risk:.1%}, no alternative)")
+            return self._rush(state, ctr, False, f"rush (risk {risk:.1%}, no alternative)")
         return Decision("down", {}, "down")

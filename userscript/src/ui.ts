@@ -95,9 +95,33 @@ function csvCell(v: unknown): string {
 }
 
 export function historyCsv(rows: HistoryRow[]): string {
-    const head = ['time', 'mode', 'map', 'floor', 'bosses', 'rainbows', 'steps', 'seconds', 'outcome', 'summary']
+    const head = [
+        'time',
+        'mode',
+        'policy',
+        'map',
+        'floor',
+        'bosses',
+        'rainbows',
+        'steps',
+        'seconds',
+        'outcome',
+        'summary'
+    ]
     const lines = rows.map(r =>
-        [r.time, r.mode, r.map, r.floor, r.bosses, r.rainbows.join('|'), r.steps, r.seconds, r.outcome, r.summary]
+        [
+            r.time,
+            r.mode,
+            r.policy ?? 'threshold',
+            r.map,
+            r.floor,
+            r.bosses,
+            r.rainbows.join('|'),
+            r.steps,
+            r.seconds,
+            r.outcome,
+            r.summary
+        ]
             .map(csvCell)
             .join(',')
     )
@@ -172,7 +196,7 @@ export function mountPanel(): void {
         form.append(wrap)
     }
 
-    function select<K extends 'mode' | 'map'>(key: K, label: string, options: [string, string][]): void {
+    function select<K extends 'mode' | 'policy' | 'map'>(key: K, label: string, options: [string, string][]): void {
         const el = h('select')
         for (const [value, caption] of options) el.append(h('option', { value, textContent: caption }))
         el.value = settings[key]
@@ -215,7 +239,7 @@ export function mountPanel(): void {
         field(label, el, 'wide')
     }
 
-    type BoolKey = 'restock' | 'buyTickets' | 'sellLoot' | 'verbose'
+    type BoolKey = 'restock' | 'rushElites' | 'buyTickets' | 'sellLoot' | 'verbose'
     function check(key: BoolKey, label: string): void {
         const el = h('input', { type: 'checkbox', checked: settings[key] })
         el.addEventListener('change', () => {
@@ -229,12 +253,17 @@ export function mountPanel(): void {
         ['sim', '练习（免费，无收益）'],
         ['real', '正式（消耗门票与金币）']
     ])
+    select('policy', '决策', [
+        ['threshold', '阈值规则'],
+        ['markov', '马尔可夫（后台求解约 5 分钟、内存约 600 MB；求解完成前用阈值规则）']
+    ])
     number('runs', '局数', { min: 1 })
     select('map', '地图', MAPS)
     number('maxFloor', '最高层（到达即撤离）', { min: 1, placeholder: '不限' })
     number('goldReserve', '金币保留线', { min: 0, step: 10000 })
     text('loadout', '携带物资（物品id=数量，逗号分隔）')
     check('restock', '开局前自动补货（不低于金币保留线）')
+    check('rushElites', '连战自动打精英（模型判断同样安全时；每局停顿更少）')
     check('buyTickets', '免费门票用完后购买付费门票（350 金币）')
     check('sellLoot', '正式局结束后出售本局战利品')
     text('sellRarities', '整批出售的稀有度')

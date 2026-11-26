@@ -6,8 +6,11 @@ import { describe, expect, it } from 'vitest'
 import { ElevatorClient } from '../src/client.ts'
 import type { FetchLike } from '../src/client.ts'
 import { Farmer, selectLootToSell } from '../src/farmer.ts'
+import type { FarmerHooks } from '../src/farmer.ts'
 import type { LogLevel } from '../src/farmer.ts'
 import { makeBuild } from '../src/model.ts'
+import { BossFarmPolicy, decision } from '../src/policy.ts'
+import type { Decision } from '../src/policy.ts'
 import { DEFAULT_SETTINGS, normalizeSettings, parseLoadout } from '../src/settings.ts'
 import type { Settings } from '../src/settings.ts'
 import { load, remove } from '../src/storage.ts'
@@ -67,7 +70,7 @@ describe('设置', () => {
 // ---------------------------------------------------------------------------
 // 假游戏服务器：练习局，每次连战下 10 层，F21 起只能撤离；F11 有一个首领
 // ---------------------------------------------------------------------------
-function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
+function fakeServer(opts: { cooldownOnce?: boolean; wishBoss?: boolean } = {}) {
     let rev = 0
     let cooldownPending = Boolean(opts.cooldownOnce)
     const commands: string[] = []
@@ -93,8 +96,13 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
     }
     const sold: Json[] = []
     const starts: Json[] = []
-    const runControls = (floor: number) =>
-        (floor >= 21 ? ['extract'] : ['rush', 'down', 'extract']).map(c => ({ command: c, params: {}, label: c }))
+    const runControls = (run: Json) =>
+        (run.event.enemy
+            ? ['fight', 'field_use', 'extract']
+            : run.floor >= 21
+              ? ['extract']
+              : ['rush', 'down', 'extract']
+        ).map(c => ({ command: c, params: {}, label: c }))
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 
     const fetch: FetchLike = async (url, init) => {
@@ -123,6 +131,20 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
                 field: [],
                 field_slots: [null, null]
             }
+            if (opts.wishBoss) {
+                state.run.event = {
+                    kind: 'combat',
+                    enemy: { name: '首领', boss: 3, elite: true, hp: 900, max_hp: 900, atk: 1, def: 0, agi: 0 }
+                }
+                state.run.field = [{ id: 'field_wish', name: '为了我所期待的', quantity: 1 }]
+            }
+        } else if (command === 'field_use' && params.id === 'field_wish') {
+            // 服务器只在命令结果里返回预览（含确认令牌），状态里没有
+            result = { outcome: 'ongoing', summary: '预览', wish_preview: { enemy: '首领', value: 0, token: 'tok' } }
+        } else if (command === 'wish_confirm' && params.token === 'tok') {
+            state.run.event = { kind: 'ready' }
+            state.run.field = []
+            result = { outcome: 'ongoing', summary: '击败首领', battle: { outcome: 'victory', log: [] } }
         } else if (command === 'rush') {
             state.run.floor += 10
             if (state.run.floor === 11) {
@@ -143,7 +165,7 @@ function fakeServer(opts: { cooldownOnce?: boolean } = {}) {
         }
         rev += 1
         state.revision = `r${rev}`
-        state.controls = state.run ? runControls(state.run.floor) : []
+        state.controls = state.run ? runControls(state.run) : []
         return json({ result, state, sync_token: `t${rev}` })
     }
     return { fetch, commands, state, sold, starts }
@@ -249,4 +271,44 @@ describe('完整流程（假服务器）', () => {
         await farmer.run()
         expect(logs.some(m => m.includes('请先在游戏页面登录'))).toBe(true)
     })
+})
+
+// ---------------------------------------------------------------------------
+// 「为了我所期待的」：预览只在命令结果里，运行器须把它交给下一次决策
+// ---------------------------------------------------------------------------
+class WishPolicy extends BossFarmPolicy {
+    readonly previews: Json[] = []
+
+    decide(state: Json): Decision {
+        if (state.wish_preview) {
+            this.previews.push(state.wish_preview)
+            return decision('wish_confirm', { token: state.wish_preview.token }, '确认')
+        }
+        if (state.run.event?.enemy) return decision('field_use', { id: 'field_wish' }, '发动')
+        return decision('extract', {}, '撤离')
+    }
+}
+
+class WishFarmer extends Farmer {
+    protected createPolicy(): BossFarmPolicy {
+        const policy = new WishPolicy(this.cal)
+        policy.affixBuild = makeBuild({ hp: 666, atk: 150, defense: 70, agi: 77, luk: 21, critMult: 1.9 })
+        policy.loadoutKey = JSON.stringify([])
+        return policy
+    }
+}
+
+it('「为了我所期待的」：把结果里的预览交给下一次决策，确认击杀计入首领', async () => {
+    const server = fakeServer({ wishBoss: true })
+    const logs: string[] = []
+    const hooks: FarmerHooks = { log: m => logs.push(m), progress: () => {} }
+    const farmer = new WishFarmer(
+        { ...DEFAULT_SETTINGS, delay: 0 },
+        hooks,
+        new ElevatorClient('https://example.test/elevator/api', server.fetch)
+    )
+    await farmer.run()
+    expect(server.commands).toEqual(['simulate', 'field_use', 'wish_confirm', 'extract'])
+    expect((farmer.policy as WishPolicy).previews).toEqual([{ enemy: '首领', value: 0, token: 'tok' }])
+    expect(logs.some(m => m.includes('首领 #1 击败'))).toBe(true)
 })

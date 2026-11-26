@@ -29,7 +29,10 @@ N = 40_000
 
 CAMEL = {"defense": "defense", "boss_bonus": "bossBonus", "crit_mult": "critMult", "crit_bonus": "critBonus",
          "last_stand": "lastStand", "start_shield": "startShield", "dealt_mult": "dealtMult",
-         "taken_mult": "takenMult", "def_pct": "defPct", "atk_pct": "atkPct"}
+         "taken_mult": "takenMult", "def_pct": "defPct", "atk_pct": "atkPct", "dodge_bonus": "dodgeBonus",
+         "guard_hits": "guardHits", "guard_reduction": "guardReduction", "burst_hits": "burstHits",
+         "burst_mult": "burstMult", "burst_sure": "burstSure", "pierce_cap": "pierceCap",
+         "depth_shred_cap": "depthShredCap", "flee_bonus": "fleeBonus"}
 
 AFFIXES = Build(hp=666, atk=150, defense=70, agi=77, luk=21, pierce=0.26, leech=0.06, heavy=0.38,
                 berserk=0.075, vampire=0.10, crit_mult=1.9)
@@ -63,6 +66,11 @@ def fights() -> list:
         "desperate": replace(AFFIXES, desperate=True, last_stand=True, crit_bonus=0.13, reduction=-0.1),
         "balance": AFFIXES.with_temp_gear("balance", "apron"),
         "slow": replace(AFFIXES, agi=5, leech=0.0, vampire=0.0, heavy=0.0),
+        # blessing B06 full set: pierce above the 75% cap, 抢拍 on every 4th round
+        "b06": replace(AFFIXES, pierce=0.86, pierce_cap=0.87, beat=True),
+        # field charges: guard on the next hits taken, a charged sure-hit main attack, extra dodge
+        "charges": replace(AFFIXES, guard_hits=3, guard_reduction=0.5, burst_hits=2, burst_mult=1.8,
+                           burst_sure=True, dodge_bonus=0.1),
     }
     cases = []
     for name, b in builds.items():
@@ -92,6 +100,9 @@ def chains() -> list:
                  "player": PLAYER}
         b = run_build(state, AFFIXES)
         out.append({"state": state, "risk": chain_risk(b, state, cal, samples=N, rng=np.random.default_rng(floor))})
+        # a rush with 自动打精英 on: elites fought up to their pause on the way
+        out.append({"state": state, "elites": True,
+                    "risk": chain_risk(b, state, cal, samples=N, rng=np.random.default_rng(floor), elites=True)})
     return out
 
 

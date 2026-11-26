@@ -36,7 +36,9 @@ at most ~3 bosses/run; carrying 50 instead of 30 surgery kits adds ~2.
 Limits: event ATK bonus <= +60%, adrenaline <= +50% (2 shots, separate pool), 3 floor-limited
 buffs, 2 temp-gear slots, 2 grenades per boss. Two balance gears = x4 damage taken (measured).
 Rush auto-fights normal monsters without healing, so deep down the agent only rushes when a chain
-of three normal fights is <1% lethal; otherwise it steps one floor at a time.
+of four normal fights is <1% lethal; otherwise it steps one floor at a time. With `--rush-elites on`
+(default) the agent also switches the server's 自动打精英 on for rushes where fighting elites on the way is
+as safe, so early floors pass without a stop at every elite (`--rush-elites off`: every rush stops at elites).
 
 ## Run & selling rules
 
@@ -117,11 +119,21 @@ cached per build). The heal stock is a run-long budget: instead of tracking the 
 heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
 that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
 
-- No voluntary extraction (death and extraction both end the run; only bosses count). Collectible
-  banking still extracts; `MarkovConfig.extract_below` re-enables value-based extraction.
+- Extraction at a wall: once the expected further boss kills drop below `MarkovConfig.extract_below`
+  (0.3), the agent extracts and banks the bag a death would lose. The estimate chains the next three bosses'
+  win chances with a full heal before every window (optimistic), so it fires only when even perfect healing
+  cannot get past them (with the B06 build: around F2800-2900). A boss that hopeless is not fought: the agent
+  extracts (offered during a boss fight) or uses a smoke bomb, which also ends the run as an extraction.
+  A doll in the bag disables this (it saves the bag anyway). Collectible banking extracts as before.
 - A low-HP rush is fine: the server halts a rush before any fight at HP <= 50%, and heals are used in
   the encounter instead.
 - Rush is chosen while it gives up at most `rush_tolerance` (0.002) expected bosses against single steps.
+- Rushing through elites (自动打精英) is a third move in the solver: the rush fights an elite up to its pause
+  while HP is above 50%, continues on a kill and stops at the pause otherwise. The agent takes it while it
+  gives up at most `elite_rush_tolerance` (0.002) expected bosses against the best other move, i.e. while a
+  stop before the elite (to heal, flee or smoke) would not pay. It never beats stopping; it saves requests.
+  The threshold policy uses it while a four-fight chain with elites (at the floor's elite share) is <1%
+  lethal. Either policy flips the setting with `rush_settings` only when it has to change.
 - Elites under live rules are two segments: the first 8 rounds are valued with the best heals at the
   pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
   solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.

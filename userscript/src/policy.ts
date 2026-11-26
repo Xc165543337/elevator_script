@@ -10,6 +10,7 @@ import type { Calibration, FightEstimate } from './combat.ts'
 import { fixed, int, pct } from './format.ts'
 import { GearModel } from './gear.ts'
 import type { Build } from './model.ts'
+import { defaultRng } from './rng.ts'
 import type { Json } from './types.ts'
 
 /** 商店补给的回复量（最大生命比例）；野外道具从描述中解析 */
@@ -26,7 +27,7 @@ export const COMBAT_ONLY = new Set(['field_surgery'])
 /** 服务器同时最多允许三个限层增益 */
 const MAX_DURATION_BUFFS = 3
 /** 局内要用的补给留在背包，永不锁入安全箱 */
-const KEEP_IN_BAG = new Set([
+export const KEEP_IN_BAG = new Set([
     ...Object.keys(SUPPLY_HEAL),
     'adrenaline',
     'grenade',
@@ -97,12 +98,19 @@ export interface PolicyConfig {
     startAdrenaline: number
     /** 连战允许的最大死亡概率（连续 4 场普通战斗） */
     maxRushRisk: number
+    /**
+     * 同样安全时让连战自己打精英（服务器设置「自动打精英」），每局停顿与请求更少。阈值策略要求含精英的连战风险
+     * 不超过 maxRushRisk；马尔可夫策略要求期望首领的损失不超过 eliteRushTolerance
+     */
+    rushElites: boolean
     /** 安全箱满时，战利品价值 ≥ 倍数 × 箱内最便宜物品才替换 */
     swapMargin: number
     /** 开局使用哆啦的临时扩容袋（安全箱 +1 格）；扩容袋珍贵，默认不用（捡到的带回家） */
     usePouch: boolean
     /** 只剩战斗专用回复时，HP 低于此比例才在遭遇中使用 */
     combatTopupHp: number
+    /** 遗物盒估值 ≥ 此值时舔包，否则捞尸换赏金；舔到的物资仍有这么多放不进安全箱时撤离带回 */
+    relicLootValue: number
 }
 
 export const DEFAULT_POLICY: PolicyConfig = {
@@ -117,9 +125,11 @@ export const DEFAULT_POLICY: PolicyConfig = {
     samples: 600,
     startAdrenaline: 2,
     maxRushRisk: 0.01,
+    rushElites: true,
     swapMargin: 1.2,
     usePouch: false,
-    combatTopupHp: 0.3
+    combatTopupHp: 0.3,
+    relicLootValue: 10_000_000
 }
 
 export interface Decision {
@@ -129,7 +139,12 @@ export interface Decision {
     estimate?: FightEstimate
 }
 
-const decision = (command: string, params: Record<string, unknown>, reason: string, est?: FightEstimate): Decision => ({
+export const decision = (
+    command: string,
+    params: Record<string, unknown>,
+    reason: string,
+    est?: FightEstimate
+): Decision => ({
     command,
     params,
     reason,
@@ -141,12 +156,12 @@ function pctOf(text: string, pattern: RegExp): number {
     return m ? Number(m[1]) / 100 : 0
 }
 
-function controlsOf(state: Json): Map<string, Json> {
+export function controlsOf(state: Json): Map<string, Json> {
     return new Map(((state.controls || []) as Json[]).map(c => [c.command, c]))
 }
 
 /** 参数的稳定键（与 Python 的 repr(sorted(params.items())) 作用相同） */
-function paramsKey(params: Record<string, unknown>): string {
+export function paramsKey(params: Record<string, unknown>): string {
     return JSON.stringify(Object.entries(params).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
 }
 
@@ -177,16 +192,28 @@ function compareKeys(a: number | number[], b: number | number[]): number {
 
 type Heal = [number, Json]
 
+const RELIC_VALUE = /估值\s*([\d,]+)\s*金/
+
+/** 遗物盒估值（事件文本「……遗落的物资，估值 1,234 金。」） */
+export function relicValue(event: Json): number {
+    const m = RELIC_VALUE.exec(`${event.text || ''} ${event.description || ''}`)
+    return m ? Number(m[1].replaceAll(',', '')) : 0
+}
+
 export class BossFarmPolicy {
     readonly cfg: PolicyConfig
     /** 服务器拒绝过的 (楼层, 命令, 参数)；该楼层不再提出 */
-    private banned = new Set<string>()
+    protected banned = new Set<string>()
     /** 本局服务器提示奇遇攻击加成已达上限（+60%） */
     eventAtkCapped = false
     adrenalineUsed = 0
     pouchUsed = false
-    /** 最近一次没有限层增益时看到的实时属性 */
+    /** 最近一次没有限层增益时看到的实时属性（含减伤与当时穿戴的临装） */
     baseStats: Json = null
+    /** 道具 → 仍被禁用到的楼层（如缓释再生液还在生效时每支都会被拒绝） */
+    private blockedUntil = new Map<string, number>()
+    /** 舔到的遗物盒仍有部分不在安全箱里 */
+    banking = false
     affixBuild: Build | null = null
     loadoutKey: string | null = null
 
@@ -203,6 +230,8 @@ export class BossFarmPolicy {
         this.adrenalineUsed = 0
         this.pouchUsed = false
         this.baseStats = null
+        this.blockedUntil.clear()
+        this.banking = false
     }
 
     /** 响应服务器的限制提示 */
@@ -213,15 +242,45 @@ export class BossFarmPolicy {
         }
     }
 
-    ban(floor: number, d: Decision): void {
+    /** 服务器拒绝了 d：本层不再提出；itemId / message 为被拒绝的道具及原因 */
+    ban(floor: number, d: Decision, itemId: string | null = null, message = ''): void {
         this.banned.add(`${floor}|${d.command}|${paramsKey(d.params)}`)
+        if (itemId && message.includes('还在生效')) this.blockedUntil.set(itemId, floor + 3)
+        // 攻击加成已达 +50%（例如续玩的对局）：本局不再打肾上腺素
+        if (itemId === 'adrenaline') this.adrenalineUsed = this.cfg.startAdrenaline
     }
 
-    private allowed(floor: number, command: string, params: Record<string, unknown>): boolean {
+    protected itemBlocked(run: Json, itemId: string): boolean {
+        return run.floor <= (this.blockedUntil.get(itemId) ?? -1)
+    }
+
+    protected allowed(floor: number, command: string, params: Record<string, unknown>): boolean {
         return !this.banned.has(`${floor}|${command}|${paramsKey(params)}`)
     }
 
     // ------------------------------------------------------------------ 辅助
+    /** 按需要的「自动打精英」设置连战，与服务器不同时先切换。服务器不报告此设置时从不让连战打精英 */
+    protected rush(state: Json, ctr: Map<string, Json>, autoElite: boolean, reason: string): Decision {
+        const player = state.player || {}
+        if (!('rush_auto_elite' in player)) return decision('rush', {}, reason)
+        const params = { auto_elite: autoElite }
+        let auto = autoElite
+        if (Boolean(player.rush_auto_elite) !== autoElite) {
+            if (this.allowed(state.run.floor, 'rush_settings', params)) {
+                return decision(
+                    'rush_settings',
+                    params,
+                    `${autoElite ? '连战自动打精英' : '连战遇精英暂停'}（${reason}）`
+                )
+            }
+            if (!autoElite && ctr.has('down')) {
+                return decision('down', {}, `${reason}，但无法关闭「自动打精英」→ 单步`) // 不盲打精英
+            }
+            auto = Boolean(player.rush_auto_elite)
+        }
+        return decision('rush', {}, auto ? `${reason}，含精英` : reason)
+    }
+
     /** 实时战斗 Build；永久词条按当前穿戴只推导一次 */
     currentBuild(state: Json): Build {
         const loadout = JSON.stringify(Object.entries(state.player?.loadout || {}).sort())
@@ -239,18 +298,23 @@ export class BossFarmPolicy {
      */
     lastingBuild(state: Json): Build {
         const run = state.run
-        if (!(run.field_buffs || []).length) this.baseStats = { ...run.effective_stats }
         const build = this.currentBuild(state)
+        const worn = JSON.stringify(((run.field_slots || []) as Json[]).map(slot => slot?.id ?? null))
+        if (!(run.field_buffs || []).length)
+            this.baseStats = { ...run.effective_stats, reduction: build.reduction, worn }
         const base = this.baseStats
-        if (!isEmpty(base)) {
-            return {
-                ...build,
-                atk: Math.min(build.atk, base.atk),
-                defense: Math.min(build.defense, base.def),
-                agi: Math.min(build.agi, base.agi)
-            }
+        if (isEmpty(base)) return build
+        if (base.worn === worn) {
+            // 临装未变：增益也可能降低属性（如清仓红牌防御 -20%），直接用无增益时的数值
+            return { ...build, atk: base.atk, defense: base.def, agi: base.agi, reduction: base.reduction }
         }
-        return build
+        return {
+            ...build,
+            atk: Math.min(build.atk, base.atk),
+            defense: Math.min(build.defense, base.def),
+            agi: Math.min(build.agi, base.agi),
+            reduction: Math.min(build.reduction, base.reduction)
+        }
     }
 
     estimate(state: Json): FightEstimate {
@@ -304,8 +368,8 @@ export class BossFarmPolicy {
                 `野外回复 ${item.name}（+${pct(heal)}，缺口 ${pct(deficit)}）`
             )
         }
-        const bag = BossFarmPolicy.bagHeals(run, inCombat).filter(([, it]) =>
-            this.allowed(floor, 'use', { index: it.index })
+        const bag = BossFarmPolicy.bagHeals(run, inCombat).filter(
+            ([, it]) => this.allowed(floor, 'use', { index: it.index }) && !this.itemBlocked(run, it.id)
         )
         if (!bag.length) return null
         const fittingBag = bag.filter(([h]) => h <= deficit + 0.1)
@@ -351,7 +415,7 @@ export class BossFarmPolicy {
         return null
     }
 
-    private static bagItem(run: Json, itemId: string): Json | null {
+    protected static bagItem(run: Json, itemId: string): Json | null {
         return ((run.bag || []) as Json[]).find(it => it.id === itemId) ?? null
     }
 
@@ -371,7 +435,7 @@ export class BossFarmPolicy {
         throw new AgentError(`第 ${floor} 层所有操作都被拒绝`)
     }
 
-    private decideRaw(state: Json): Decision {
+    protected decideRaw(state: Json): Decision {
         const run = state.run
         const ctr = controlsOf(state)
         if (!isEmpty(run.field_offer)) return this.fieldOffer(run)
@@ -384,11 +448,47 @@ export class BossFarmPolicy {
         if (event.kind === 'choice' && ((state.controls || []) as Json[]).some(c => c.command === 'event')) {
             return this.choice(state)
         }
-        if (ctr.has('rescue')) return decision('rescue', ctr.get('rescue').params || {}, '归还遇难玩家的遗物')
+        if (event.kind === 'relic' && (ctr.has('rob') || ctr.has('rescue'))) return this.relic(event, ctr)
+        const bank = this.bankLoot(run, ctr)
+        if (bank) return bank
         if (ctr.has('down') || ctr.has('rush')) return this.advance(state, ctr)
         if (ctr.has('leave')) return decision('leave', {}, '无可执行操作')
         if (ctr.has('extract')) return decision('extract', {}, '只能撤离')
         throw new AgentError(`没有已知的操作：${[...ctr.keys()].join(', ')}`)
+    }
+
+    /** 遇难玩家的遗物盒：估值 ≥ relicLootValue 时舔包，否则捞尸（赏金立即入账，无需带出） */
+    private relic(event: Json, ctr: Map<string, Json>): Decision {
+        const value = relicValue(event)
+        if (value >= this.cfg.relicLootValue && ctr.has('rob')) {
+            this.banking = true
+            return decision(
+                'rob',
+                ctr.get('rob').params || {},
+                `舔包：遗物估值 ${int(value)}（≥ ${int(this.cfg.relicLootValue)}）`
+            )
+        }
+        if (ctr.has('rescue')) {
+            return decision('rescue', ctr.get('rescue').params || {}, `捞尸：归还遗物（估值 ${int(value)}）换赏金`)
+        }
+        return decision('leave', {}, '遗物盒：无可执行操作')
+    }
+
+    /**
+     * 舔包之后：仍有 ≥ relicLootValue 的物资在安全箱外（死亡会丢失）时撤离带回。在安全箱整理之后判断，
+     * 只计放不进去的部分；全部放下后照常前进。普通战利品不会触发撤离。
+     */
+    private bankLoot(run: Json, ctr: Map<string, Json>): Decision | null {
+        if (!this.banking) return null
+        const exposed = ((run.bag || []) as Json[])
+            .filter(it => it.can_protect && !KEEP_IN_BAG.has(it.id))
+            .reduce((sum, it) => sum + Number(it.value || 0) * (it.quantity || 1), 0)
+        if (exposed < this.cfg.relicLootValue) {
+            this.banking = false
+            return null
+        }
+        if ((run.event || {}).enemy || !ctr.has('extract')) return null
+        return decision('extract', {}, `撤离：舔到的遗物仍有 ${int(exposed)} 放不进安全箱`)
     }
 
     /** 开局使用携带的肾上腺素（每支本局攻击 +25%，最多 2 支）；同时立即打开扩容袋（+1 格） */
@@ -472,7 +572,7 @@ export class BossFarmPolicy {
         return null
     }
 
-    private fightDecision(state: Json, ctr: Map<string, Json>): Decision {
+    protected fightDecision(state: Json, ctr: Map<string, Json>): Decision {
         const run = state.run
         const foe = run.event.enemy
         const boss = Boolean(foe.boss)
@@ -611,7 +711,7 @@ export class BossFarmPolicy {
         return BossFarmPolicy.fieldHeals(run).length > 0 || BossFarmPolicy.bagHeals(run, true).length > 0
     }
 
-    private advance(state: Json, ctr: Map<string, Json>): Decision {
+    protected advance(state: Json, ctr: Map<string, Json>): Decision {
         const run = state.run
         if (this.cfg.maxFloor && run.floor >= this.cfg.maxFloor && ctr.has('extract')) {
             return decision('extract', {}, `已到最高层 ${this.cfg.maxFloor}`)
@@ -632,12 +732,21 @@ export class BossFarmPolicy {
             }
         }
         if (ctr.has('rush')) {
-            const risk = chainRisk(this.lastingBuild(state), state, this.cal, 4, this.cfg.samples, run.map || 'mall')
-            if (risk <= this.cfg.maxRushRisk) return decision('rush', {}, `连战（连续风险 ${pct(risk, 1)}）`)
+            const build = this.lastingBuild(state)
+            const mapId = run.map || 'mall'
+            const risk = chainRisk(build, state, this.cal, 4, this.cfg.samples, mapId)
+            if (risk <= this.cfg.maxRushRisk) {
+                if (this.cfg.rushElites && 'rush_auto_elite' in (state.player || {})) {
+                    const eliteRisk = chainRisk(build, state, this.cal, 4, this.cfg.samples, mapId, defaultRng, true)
+                    const why = `连战（连续风险 ${pct(risk, 1)}，含精英 ${pct(eliteRisk, 1)}）`
+                    return this.rush(state, ctr, eliteRisk <= this.cfg.maxRushRisk, why)
+                }
+                return this.rush(state, ctr, false, `连战（连续风险 ${pct(risk, 1)}）`)
+            }
             const forced = this.bestHeal(run, false, true)
             if (forced && hpFrac < 0.95) return { ...forced, reason: `连战风险 ${pct(risk, 1)} → ${forced.reason}` }
             if (ctr.has('down')) return decision('down', {}, `连战风险 ${pct(risk, 1)}：单步前进，每场战斗都能准备`)
-            return decision('rush', {}, `连战（风险 ${pct(risk, 1)}，别无选择）`)
+            return this.rush(state, ctr, false, `连战（风险 ${pct(risk, 1)}，别无选择）`)
         }
         return decision('down', {}, '下一层')
     }

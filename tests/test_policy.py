@@ -334,3 +334,61 @@ def test_extracts_when_the_safe_box_cannot_hold_valuable_loot():
     coffee = {"id": "coffee", "index": 9, "name": "coffee", "quantity": 5, "value": 300, "can_protect": True}
     s["run"]["bag"] = [*loot[:2], coffee]                            # 6M exposed: keep farming
     assert p._bank_loot(s["run"], {"extract": {}}) is None
+
+
+# ------------------------------------------------------------------ rushing through elites (自动打精英)
+def _rush_state(auto_elite=None, hp=666):
+    s = make_state(hp=hp, bag=[{"id": "coffee", "index": 1, "name": "coffee", "quantity": 5}],
+                   controls=("rush", "down", "extract"))
+    if auto_elite is not None:
+        s["player"]["rush_auto_elite"] = auto_elite
+    return s
+
+
+def _stub_chain_risk(monkeypatch, normal, elites):
+    import policy
+    monkeypatch.setattr(policy, "chain_risk", lambda *_a, **kw: elites if kw.get("elites") else normal)
+
+
+def test_switches_auto_elite_on_when_elites_are_as_safe(monkeypatch):
+    _stub_chain_risk(monkeypatch, normal=0.0, elites=0.004)
+    policy = make_policy()
+    d = policy.decide(_rush_state(auto_elite=False))
+    assert (d.command, d.params) == ("rush_settings", {"auto_elite": True}), d.reason
+    d = policy.decide(_rush_state(auto_elite=True))
+    assert d.command == "rush" and d.reason.endswith("with elites"), d.reason
+
+
+def test_switches_auto_elite_off_when_elites_are_risky(monkeypatch):
+    _stub_chain_risk(monkeypatch, normal=0.004, elites=0.03)
+    policy = make_policy()
+    d = policy.decide(_rush_state(auto_elite=True))
+    assert (d.command, d.params) == ("rush_settings", {"auto_elite": False}), d.reason
+    assert policy.decide(_rush_state(auto_elite=False)).command == "rush"
+
+
+def test_rush_elites_off_or_unreported_never_fights_elites_in_a_rush(monkeypatch):
+    _stub_chain_risk(monkeypatch, normal=0.0, elites=0.0)
+    assert make_policy().decide(_rush_state()).command == "rush"                  # server does not report it
+    d = make_policy(rush_elites=False).decide(_rush_state(auto_elite=True))
+    assert (d.command, d.params) == ("rush_settings", {"auto_elite": False})
+
+
+def test_single_steps_when_auto_elite_cannot_be_switched_off(monkeypatch):
+    _stub_chain_risk(monkeypatch, normal=0.004, elites=0.03)
+    policy = make_policy()
+    s = _rush_state(auto_elite=True)
+    policy.ban(s["run"]["floor"], policy.decide(s))                   # the server refused the switch
+    assert policy.decide(s).command == "down"
+
+
+def test_elite_chain_risk_counts_elite_fights():
+    # beats normal monsters at F165 without a scratch, but not every elite: only the elite chain is risky
+    from combat import chain_risk
+    fragile = Build(hp=666, atk=120, defense=20, agi=30, luk=21, pierce=0.26, leech=0.06, heavy=0.38,
+                    berserk=0.075, vampire=0.10, crit_mult=1.9)
+    s = make_state(hp=400)
+    s["run"]["floor"] = 165
+    normal = chain_risk(fragile, s, CAL, samples=4000, rng=np.random.default_rng(1))
+    elites = chain_risk(fragile, s, CAL, samples=4000, rng=np.random.default_rng(1), elites=True)
+    assert normal == 0.0 and elites > 0.03
