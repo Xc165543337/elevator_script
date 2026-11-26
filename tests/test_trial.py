@@ -80,9 +80,10 @@ def test_replay_stops_following_on_the_first_difference(monkeypatch):
         raise Stop
 
     monkeypatch.setattr(trial.TrialPolicy, "decide", no_policy)
+    out = trial.replay(live, _route(states), log=lambda _m: None)          # default: stop, run left as is
+    assert out["diverged"]["move"] == 1 and live.sent == ["prophecy_start", "down", "down"]
     with pytest.raises(Stop):
-        trial.replay(live, _route(states), log=lambda _m: None)
-    assert live.sent == ["prophecy_start", "down", "down"]
+        trial.replay(FakeLive(states, drift_at=2), _route(states), log=lambda _m: None, finish_with_policy=True)
 
 
 def test_replay_refuses_another_week_or_a_running_run():

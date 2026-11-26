@@ -169,8 +169,12 @@ The planner keeps the farm policy for events, temp gear and field items. It deci
 by beam search over flee / fight / heals and field items, scoring outcomes by HP plus the value of
 what is left. It picks each star relic by playing both options through the next two bosses. When no
 line survives a boss, it extracts on that floor (ranked above dying there). The replay compares the
-live state with the plan after every move. On a difference it stops following the route and finishes
-with the plain trial policy. The score counts the best attempt, and attempts are free.
+live state with the plan after every move and stops at the first difference (`--on-divergence policy`
+finishes the run with the plain trial policy instead). After a network error it resends a move only if
+the server's revision did not move. The score counts the best attempt, and attempts are free.
+
+Week 2026-W48 (黑洞视界 · 群星的低语): planned and played to F1290 (1289 cleared, extracted at a boss no
+searched line survives); the next best entry stopped at F330.
 
 ## Browser userscript
 

@@ -430,8 +430,11 @@ class LiveTrial:
         return self.client.revision != before
 
 
-def replay(live: LiveTrial, route: dict, log=print, trace=None) -> dict:
-    """Play the planned moves live; on the first difference from the plan, finish with the policy."""
+def replay(live: LiveTrial, route: dict, log=print, trace=None, finish_with_policy: bool = False) -> dict:
+    """Play the planned moves live. On the first difference from the plan, stop and leave the run as it
+    is (the run expires after 30 idle minutes), or finish it with the plain policy. Stopping keeps the
+    run recoverable: the local engine can rebuild the live state and plan on from there, which the
+    policy's live decisions (using the account's own gear) would make hard to reproduce."""
     week = (live.state.get("prophecy") or {}).get("week")
     if week != route["week"]:
         raise SystemExit(f"the route is for {route['week']}, the server is in {week}: plan again")
@@ -452,7 +455,10 @@ def replay(live: LiveTrial, route: dict, log=print, trace=None) -> dict:
             break
         if i % 200 == 0:
             log(f"move {i}/{len(route['moves'])}: F{got.get('floor')} hp {got.get('hp')}/{got.get('max_hp')}")
-    if diverged and live.state.get("run"):
+    if diverged and live.state.get("run") and not finish_with_policy:
+        log("stopped: the live run no longer matches the plan; re-plan from its state, or rerun with "
+            "--on-divergence policy to finish it with the plain trial policy")
+    elif diverged and live.state.get("run"):
         log("finishing the run with the trial policy (no search live)")
         policy = TrialPolicy()
         while live.state.get("run"):
@@ -477,6 +483,8 @@ def main() -> None:
     play_live = sub.add_parser("replay", help="play a planned route on the live server")
     play_live.add_argument("--route", required=True)
     play_live.add_argument("--delay", type=float, default=0.05, help="seconds between commands")
+    play_live.add_argument("--on-divergence", choices=("stop", "policy"), default="stop",
+                           help="when the live run stops matching the plan: stop (default), or finish with the policy")
     play_live.add_argument("--i-understand-live", action="store_true",
                            help="required: the replay plays a real trial attempt on the account")
     args = ap.parse_args()
@@ -492,7 +500,8 @@ def main() -> None:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         path = os.path.join(os.path.dirname(args.route), f"replay_{stamp}.jsonl")
         with open(path, "w", encoding="utf-8", buffering=1) as trace:
-            replay(LiveTrial(client, args.delay, print), route, trace=trace)
+            replay(LiveTrial(client, args.delay, print), route, trace=trace,
+                   finish_with_policy=args.on_divergence == "policy")
         return
     os.makedirs(args.out, exist_ok=True)
     engine = TrialEngine(args.engine, os.path.join(args.out, "engine.sqlite3"))
