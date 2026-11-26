@@ -11,13 +11,11 @@
 
 1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/)（Chrome / Edge / Firefox 均可；
    Chrome 需在扩展详情中开启「允许用户脚本」）。
-2. 在本仓库的 [Releases](../../releases/latest) 下载附件 `elevator-farmer.user.js`（仓库为私有，需登录有权限的 GitHub 账号）。
-3. 打开 Tampermonkey 管理面板 →「+」新建脚本 → 删除模板内容，粘贴下载文件的全部内容 → 保存（Ctrl+S）。
-4. 打开游戏页面 `https://elevator.slime.icu/elevator/` 并登录，右下角会出现「无尽电梯 · 刷首领」面板。
+2. 打开本仓库最新 [Release](../../releases/latest)，点击附件 `elevator-farmer.user.js`，Tampermonkey 会弹出安装页 → 安装。
+3. 打开游戏页面 `https://elevator.slime.icu/elevator/` 并登录，右下角会出现「无尽电梯 · 刷首领」面板。
 
-**更新**：私有仓库的附件需要登录才能下载，Tampermonkey 无法自动更新。新版本发布后，重复第 2、3 步，
-在管理面板中打开已安装的脚本，用新内容整体替换后保存（设置与记录保存在浏览器中，不受影响）。
-若将仓库改为公开，CI 构建会自动写入更新地址，此后可直接点击附件安装并自动更新。
+**更新**：脚本带有更新地址（指向最新 Release 的附件），Tampermonkey 会定期自动检查；也可在管理面板中手动「检查更新」。
+设置与记录保存在浏览器中，更新不受影响。1.2.1 之前的版本是在仓库私有时构建的，没有更新地址，需按上面第 2 步重装一次。
 
 ## 使用
 
