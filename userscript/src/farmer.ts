@@ -6,10 +6,11 @@
 // ============================================================================
 
 import DEFAULT_CALIBRATION from '../../calibration.json'
-import { Calibration } from './combat.ts'
+import { battleEnemy, Calibration } from './combat.ts'
 import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
 import { int } from './format.ts'
+import { floorMix, MIX_KINDS, parseFloorOdds } from './model.ts'
 import { AgentError, BossFarmPolicy } from './policy.ts'
 import type { Decision } from './policy.ts'
 import { parseList, parseLoadout } from './settings.ts'
@@ -36,6 +37,12 @@ export interface Progress {
     bosses: number
     totalBosses: number
     rainbows: string[]
+}
+
+function formatMix(mix: Record<string, number>): string {
+    return Object.entries(mix)
+        .map(([k, v]) => `${k} ${Math.round(v * 100)}%`)
+        .join(' ')
 }
 
 export interface RunSummary {
@@ -120,6 +127,8 @@ export class Farmer {
         summary: string
         /** 开局时持有的闪耀祝福部件（用于统计本局掉落） */
         heirlooms: Record<string, number>
+        /** 本局已核对遭遇概率 */
+        oddsChecked: boolean
     }
     private progress: Progress
 
@@ -243,6 +252,35 @@ export class Farmer {
             }
         }
         throw new AgentError(`命令 ${command} 多次失败`)
+    }
+
+    /** 读取状态；服务器重启（HTTP 502 等）时每分钟重试，最多 30 分钟。游戏错误（如未登录）立即抛出 */
+    private async connect(attempts = 30): Promise<void> {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                await this.client.refresh()
+                return
+            } catch (err) {
+                if (!(err instanceof NetworkError) || attempt >= attempts) throw err
+                this.log(`服务器暂不可用（${err.message}），60 秒后重试`, 'warn')
+                await this.sleep(60_000)
+            }
+        }
+    }
+
+    /** 每局一次：比较页面显示的下一层遭遇概率与模型（2026-11-25 已改过一次），不一致时提示 */
+    private checkFloorOdds(run: Json): void {
+        const floor = run.floor + 1
+        const odds = parseFloorOdds(run.next_floor)
+        if (this.tally.oddsChecked || !odds || floor < 60) return
+        this.tally.oddsChecked = true
+        const model = floorMix(floor)
+        if (MIX_KINDS.some(k => Math.abs(odds[k] - model[k]) > 0.015)) {
+            this.log(
+                `F${floor} 遭遇概率与模型不一致：服务器 ${formatMix(odds)}，模型 ${formatMix(model)}；需要更新模型`,
+                'warn'
+            )
+        }
     }
 
     async safeRefresh(): Promise<boolean> {
@@ -478,7 +516,8 @@ export class Farmer {
             floor: 0,
             outcome: '',
             summary: '',
-            heirlooms: { ...this.client?.state?.heirlooms?.owned } as Record<string, number>
+            heirlooms: { ...this.client?.state?.heirlooms?.owned } as Record<string, number>,
+            oddsChecked: false
         }
     }
 
@@ -503,8 +542,10 @@ export class Farmer {
             const run = state.run
             const floor = (t.floor = run.floor)
             this.emit({ floor, hp: run.hp, maxHp: run.max_hp, bosses: t.bosses })
+            this.checkFloorOdds(run)
             const d: Decision = this.policy.decide(state)
-            const foe = d.command === 'fight' ? (run.event || {}).enemy : null
+            const rawFoe = d.command === 'fight' ? (run.event || {}).enemy : null
+            const foe = rawFoe ? battleEnemy(state, rawFoe) : null
             const fighter = foe ? this.policy.currentBuild(state) : null
             let data: Json
             try {
@@ -512,7 +553,11 @@ export class Farmer {
             } catch (err) {
                 if (!(err instanceof GameError) || err.code !== 'invalid') throw err
                 this.log(`F${floor} ${d.command} ${JSON.stringify(d.params)} 被拒绝：${err.message}；重新选择`, 'warn')
-                this.policy.ban(floor, d)
+                const used =
+                    d.command === 'use'
+                        ? (((run.bag || []) as Json[]).find(it => it.index === d.params.index)?.id ?? null)
+                        : null
+                this.policy.ban(floor, d, used, err.message)
                 await this.client.refresh()
                 continue
             }
@@ -541,6 +586,7 @@ export class Farmer {
                 hp: run.hp,
                 stats: run.effective_stats,
                 dmg_mult: run.damage_multiplier,
+                condition: state.player?.secondary?.condition ?? null,
                 slots: run.field_slots,
                 enemy: (run.event || {}).enemy,
                 decision: d.command,
@@ -600,7 +646,7 @@ export class Farmer {
         const s = this.settings
         this.emit({ running: true, mode: s.mode, run: 0, runs: s.runs })
         try {
-            await this.client.refresh()
+            await this.connect()
             this.printStatus()
             if (action === 'status') return
             if (action === 'dedupe') {

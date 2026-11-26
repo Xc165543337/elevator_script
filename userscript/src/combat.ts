@@ -6,8 +6,9 @@
 // 双向伤害倍率（策划的平衡性调整）再与公式比较。
 // ============================================================================
 
-import { BOSS_WINDOW, effAtk, effDef, enemy, fight, fightSegment } from './model.ts'
+import { BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, effAtk, effDef, fight, fightSegment, foeAt } from './model.ts'
 import type { Build, Foe } from './model.ts'
+import { buildEffects } from './heirlooms.ts'
 import { defaultRng } from './rng.ts'
 import type { Rng } from './rng.ts'
 import type { Json } from './types.ts'
@@ -96,7 +97,8 @@ export class Calibration {
     observe(build: Build, foe: Json, log: string[]): void {
         const hits = parseBattleLog(log)
         const bossMult = foe.boss ? 1 + Math.min(1.2, build.bossBonus) : 1.0
-        const pPred = rawHit(effAtk(build), foe.def * (1 - Math.min(0.75, build.pierce))) * build.dealtMult * bossMult
+        const pPred =
+            rawHit(effAtk(build), foe.def * (1 - Math.min(build.pierceCap, build.pierce))) * build.dealtMult * bossMult
         const ePred = rawHit(foe.atk, effDef(build)) * build.takenMult * (1 - build.reduction)
         for (const [rnd, dmg] of hits.player) {
             // 第 1 回合带一次性加成，不参与校准
@@ -106,7 +108,8 @@ export class Calibration {
             }
         }
         for (const [rnd, dmg] of hits.enemy) {
-            const heavy = foe.boss && rnd % BOSS_WINDOW === 0 ? 1.26 : 1.0
+            let heavy = foe.boss && rnd % BOSS_WINDOW === 0 ? 1.26 : 1.0
+            if (build.beat && rnd % BEAT_EVERY === 0) heavy *= BEAT_TAKEN
             if (ePred > 0) this.updateEnemy(dmg / (ePred * heavy))
         }
     }
@@ -123,6 +126,21 @@ export interface FightEstimate {
 
 /** 当前时刻的战斗 Build：局内实时属性 + 永久词条。二级属性为服务器汇总值（装备、祝福、局内道具）；
  * 打击减伤 mitigation 自 2026-11-25 起提供 */
+/** 虹彩永久技能的逃跑加成（风隙羽标：常规上限后再加 20 个百分点）；其余加成已在属性中 */
+const RAINBOW_FLEE: Record<string, number> = { prism_wind: 0.2 }
+
+export function rainbowFleeBonus(state: Json): number {
+    return ((state.atlas?.rainbow || []) as Json[])
+        .filter(r => r.unlocked)
+        .reduce((sum, r) => sum + (RAINBOW_FLEE[r.id] ?? 0), 0)
+}
+
+/** 伤害公式看到的敌人：防御按本层祝福深层破甲（secondary.condition.depth_shred）削减 */
+export function battleEnemy(state: Json, foe: Foe): Foe {
+    const shred = Number(state.player?.secondary?.condition?.depth_shred || 0)
+    return shred > 0 ? { ...foe, def: foe.def * (1 - shred) } : foe
+}
+
 export function runBuild(state: Json, affixBuild: Build): Build {
     const run = state.run
     const sec = state.player?.secondary || {}
@@ -130,6 +148,9 @@ export function runBuild(state: Json, affixBuild: Build): Build {
     const mult = Number(run.damage_multiplier || 1)
     return {
         ...affixBuild,
+        ...buildEffects(state.heirlooms),
+        depthShredCap: Number(sec.condition?.depth_cap || 0),
+        fleeBonus: rainbowFleeBonus(state),
         hp: run.max_hp,
         atk: es.atk,
         defense: es.def,
@@ -164,7 +185,7 @@ export function estimate(
     rng: Rng = defaultRng
 ): FightEstimate {
     const run = state.run
-    const foe = run.event.enemy as Foe
+    const foe = battleEnemy(state, run.event.enemy as Foe)
     const boss = Boolean(foe.boss)
     const [start, rounds] = fightSegment(foe)
     const n = samples
@@ -213,7 +234,7 @@ export function chainRisk(
     let hp: Float64Array = new Float64Array(samples).fill(run.hp)
     let shield: Float64Array = new Float64Array(samples).fill(run.shield || 0)
     for (let k = 1; k <= fights; k++) {
-        const res = fight(b, hp, shield, enemy('normal', run.floor + k, mapId), { boss: false, rng })
+        const res = fight(b, hp, shield, foeAt('normal', run.floor + k, mapId, b), { boss: false, rng })
         hp = res.hp.map(v => (v <= 0 ? -1.0 : v))
         shield = res.shield
     }
