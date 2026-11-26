@@ -39,6 +39,8 @@ export interface Settings {
     maxFloor: number | null
     loadout: string
     restock: boolean
+    /** 模型判断同样安全时，连战开启「自动打精英」（每局停顿更少） */
+    rushElites: boolean
     buyTickets: boolean
     goldReserve: number
     /** 两次请求之间的最短间隔（秒） */
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
     maxFloor: null,
     loadout: DEFAULT_LOADOUT,
     restock: true,
+    rushElites: true,
     buyTickets: false,
     goldReserve: 1_000_000,
     delay: 0.05,

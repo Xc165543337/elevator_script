@@ -10,6 +10,7 @@ import type { Calibration, FightEstimate } from './combat.ts'
 import { fixed, int, pct } from './format.ts'
 import { GearModel } from './gear.ts'
 import type { Build } from './model.ts'
+import { defaultRng } from './rng.ts'
 import type { Json } from './types.ts'
 
 /** 商店补给的回复量（最大生命比例）；野外道具从描述中解析 */
@@ -97,6 +98,11 @@ export interface PolicyConfig {
     startAdrenaline: number
     /** 连战允许的最大死亡概率（连续 4 场普通战斗） */
     maxRushRisk: number
+    /**
+     * 同样安全时让连战自己打精英（服务器设置「自动打精英」），每局停顿与请求更少。阈值策略要求含精英的连战风险
+     * 不超过 maxRushRisk；马尔可夫策略要求期望首领的损失不超过 eliteRushTolerance
+     */
+    rushElites: boolean
     /** 安全箱满时，战利品价值 ≥ 倍数 × 箱内最便宜物品才替换 */
     swapMargin: number
     /** 开局使用哆啦的临时扩容袋（安全箱 +1 格）；扩容袋珍贵，默认不用（捡到的带回家） */
@@ -119,6 +125,7 @@ export const DEFAULT_POLICY: PolicyConfig = {
     samples: 600,
     startAdrenaline: 2,
     maxRushRisk: 0.01,
+    rushElites: true,
     swapMargin: 1.2,
     usePouch: false,
     combatTopupHp: 0.3,
@@ -252,6 +259,28 @@ export class BossFarmPolicy {
     }
 
     // ------------------------------------------------------------------ 辅助
+    /** 按需要的「自动打精英」设置连战，与服务器不同时先切换。服务器不报告此设置时从不让连战打精英 */
+    protected rush(state: Json, ctr: Map<string, Json>, autoElite: boolean, reason: string): Decision {
+        const player = state.player || {}
+        if (!('rush_auto_elite' in player)) return decision('rush', {}, reason)
+        const params = { auto_elite: autoElite }
+        let auto = autoElite
+        if (Boolean(player.rush_auto_elite) !== autoElite) {
+            if (this.allowed(state.run.floor, 'rush_settings', params)) {
+                return decision(
+                    'rush_settings',
+                    params,
+                    `${autoElite ? '连战自动打精英' : '连战遇精英暂停'}（${reason}）`
+                )
+            }
+            if (!autoElite && ctr.has('down')) {
+                return decision('down', {}, `${reason}，但无法关闭「自动打精英」→ 单步`) // 不盲打精英
+            }
+            auto = Boolean(player.rush_auto_elite)
+        }
+        return decision('rush', {}, auto ? `${reason}，含精英` : reason)
+    }
+
     /** 实时战斗 Build；永久词条按当前穿戴只推导一次 */
     currentBuild(state: Json): Build {
         const loadout = JSON.stringify(Object.entries(state.player?.loadout || {}).sort())
@@ -703,12 +732,21 @@ export class BossFarmPolicy {
             }
         }
         if (ctr.has('rush')) {
-            const risk = chainRisk(this.lastingBuild(state), state, this.cal, 4, this.cfg.samples, run.map || 'mall')
-            if (risk <= this.cfg.maxRushRisk) return decision('rush', {}, `连战（连续风险 ${pct(risk, 1)}）`)
+            const build = this.lastingBuild(state)
+            const mapId = run.map || 'mall'
+            const risk = chainRisk(build, state, this.cal, 4, this.cfg.samples, mapId)
+            if (risk <= this.cfg.maxRushRisk) {
+                if (this.cfg.rushElites && 'rush_auto_elite' in (state.player || {})) {
+                    const eliteRisk = chainRisk(build, state, this.cal, 4, this.cfg.samples, mapId, defaultRng, true)
+                    const why = `连战（连续风险 ${pct(risk, 1)}，含精英 ${pct(eliteRisk, 1)}）`
+                    return this.rush(state, ctr, eliteRisk <= this.cfg.maxRushRisk, why)
+                }
+                return this.rush(state, ctr, false, `连战（连续风险 ${pct(risk, 1)}）`)
+            }
             const forced = this.bestHeal(run, false, true)
             if (forced && hpFrac < 0.95) return { ...forced, reason: `连战风险 ${pct(risk, 1)} → ${forced.reason}` }
             if (ctr.has('down')) return decision('down', {}, `连战风险 ${pct(risk, 1)}：单步前进，每场战斗都能准备`)
-            return decision('rush', {}, `连战（风险 ${pct(risk, 1)}，别无选择）`)
+            return this.rush(state, ctr, false, `连战（风险 ${pct(risk, 1)}，别无选择）`)
         }
         return decision('down', {}, '下一层')
     }

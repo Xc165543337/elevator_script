@@ -5,7 +5,8 @@ Objective: maximise the expected number of formal boss kills of one run (each ki
 
 State (per floor g): effective HP `e` = (HP + shield) / max HP on a grid over [0, E_MAX], plus the
 decision point:
-  * ready      - nothing pending: heal (non-combat items), step one floor, or rush;
+  * ready      - nothing pending: heal (non-combat items), step one floor, or rush (with the server's
+                 自动打精英 setting off: stop at every elite; or on: fight its first 8 rounds in the rush);
   * encounter  - a normal monster or elite is waiting: heal (any item), fight, or flee;
   * elite pause - (live rules) after round 8 of an elite fight, with elite HP fraction b: heal, then
                  fight the remaining rounds (solved on the fly, not stored);
@@ -41,7 +42,7 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 6            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 7            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -153,6 +154,9 @@ class MdpConfig:
     smoke_prices: tuple = (0.0, 0.03, 0.05, 0.07, 0.1, 1000.0)
     pause_samples: int = 96        # Monte Carlo fights per (hp, elite hp) point of the elite-pause kernel
     rules: ServerRules = LIVE_RULES
+    # also solve rushes with 自动打精英 on: the rush fights an elite up to its pause by itself while HP is
+    # above 50%, continues on a kill and stops at the pause otherwise (game.py `rush`). Costs ~40% more time.
+    rush_elites: bool = True
     seed: int = 0
 
 
@@ -170,7 +174,8 @@ class ValueTables:
     smoke_prices: np.ndarray
     ready: np.ndarray            # value at a ready state on floor g
     step: np.ndarray             # value of `down` from a ready state on floor g
-    rush: np.ndarray             # value of `rush` from a ready state on floor g
+    rush: np.ndarray             # value of `rush` from a ready state on floor g, stopping at elites
+    rush_elite: np.ndarray       # value of `rush` with 自动打精英 on (zeros unless config.rush_elites)
     encounter: dict              # kind ("normal" / "elite") -> value with that enemy waiting on floor g
     boss: dict = field(default_factory=dict)   # floor -> [window, lambda, hp, boss hp]
     solve_seconds: float = 0.0
@@ -355,12 +360,15 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     low = (grid <= RUSH_STOP_HP)[None, :]                              # rush stops at HP <= 50%
 
     shape = (top + 2, nl, n)
-    ready, step, rush = np.zeros(shape), np.zeros(shape), np.zeros(shape)
+    ready, step, rush, rush_elite = np.zeros(shape), np.zeros(shape), np.zeros(shape), np.zeros(shape)
     arrive = np.zeros(shape)
     encounter = {"normal": np.zeros(shape), "elite": np.zeros(shape)}
     boss_tables: dict[int, np.ndarray] = {}
     # rush continuation: mid[h][j-1] = value about to enter floor h with j floors left (not the first)
     mid = {top + 1: np.zeros((RUSH_FLOORS, nl, n)), top + 2: np.zeros((RUSH_FLOORS, nl, n))}
+    mid_elite = {h: layers.copy() for h, layers in mid.items()}      # the same with 自动打精英 on
+    # value of reaching the elite pause from a fresh elite on floor h, (L, start hp): heal, fight on
+    pause_reached: dict[int, np.ndarray] = {}
     rules = config.rules
     kernels: dict[tuple[str, int], tuple] = {}
 
@@ -389,32 +397,45 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     def income(floor: int) -> np.ndarray:
         return (lambdas * field_heal_income(floor, max_hp))[:, None]
 
-    def enter(h: int, after: np.ndarray, stop_low: bool) -> np.ndarray:
-        """Value of entering floor h during a rush; `after` = continuation once the floor is resolved."""
+    def enter(h: int, after: np.ndarray, stop_low: bool, auto_elite: bool = False) -> np.ndarray:
+        """Value of entering floor h during a rush; `after` = continuation once the floor is resolved.
+        auto_elite: the rush fights an elite by itself (HP above 50%): to its pause under live rules,
+        continuing on a kill; to the round cap under legacy rules, a draw halting the rush."""
         if is_boss_floor(h):
             return income(h) + boss_start[h]
         mix = floor_mix(h, rules)
         killed, drawn = kernel("normal", h)
         fought = after @ killed.T + ready[h] @ drawn.T          # a draw halts the rush on that floor
         normal = np.where(low, encounter["normal"][h], fought) if stop_low else fought
-        value = (mix["normal"] * normal + mix["elite"] * encounter["elite"][h]
-                 + mix["choice"] * ready[h] + mix["loot"] * after)
+        elite = encounter["elite"][h]
+        if auto_elite:
+            if rules.elite_break:
+                (_, kill), _ = elite_kernels(h)
+                auto = after @ kill.T + pause_reached[h]
+            else:
+                killed, drawn = kernel("elite", h)
+                auto = after @ killed.T + ready[h] @ drawn.T
+            elite = np.where(low, elite, auto)
+        value = mix["normal"] * normal + mix["elite"] * elite + mix["choice"] * ready[h] + mix["loot"] * after
         return income(h) + value
 
     boss_start: dict[int, np.ndarray] = {}
     for g in range(top, 0, -1):
         # 1. rush started from a ready state on g (first floor: no pre-descent HP check)
         rush[g] = enter(g + 1, mid[g + 2][RUSH_FLOORS - 2], stop_low=True) if g + 1 <= top else 0.0
-        # 2. ready on g: step, rush or heal first
+        if config.rush_elites and g + 1 <= top:
+            rush_elite[g] = enter(g + 1, mid_elite[g + 2][RUSH_FLOORS - 2], stop_low=True, auto_elite=True)
+        # 2. ready on g: step, rush (either way) or heal first
         step[g] = arrive[g + 1]
-        ready[g] = calm_heal(np.maximum(step[g], rush[g]))
+        ready[g] = calm_heal(np.maximum(np.maximum(step[g], rush[g]), rush_elite[g]))
         # 3. encounters on g
         for kind in ("normal", "elite"):
             foe = enemy(kind, g, map_id)
             if kind == "elite" and rules.elite_break:
                 (cont, kill), lands = elite_kernels(g)
                 pause = elite_pause_value(lands, ready[g], any_heal, nb)              # (L, N, Nb)
-                fight_value = ready[g] @ kill.T + pause.reshape(nl, -1) @ cont.T
+                pause_reached[g] = pause.reshape(nl, -1) @ cont.T
+                fight_value = ready[g] @ kill.T + pause_reached[g]
             else:
                 killed, drawn = kernel(kind, g)
                 fight_value = ready[g] @ (killed + drawn).T
@@ -445,11 +466,20 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
                 layers[j - 1] = np.where(low, ready[g], enter(g + 1, after, stop_low=True))
             mid[g + 1] = layers
             mid.pop(g + 3, None)
+            if config.rush_elites:
+                layers = np.zeros((RUSH_FLOORS, nl, n))
+                for j in range(1, RUSH_FLOORS):
+                    after = ready[g + 1] if j == 1 else mid_elite[g + 2][j - 2]
+                    layers[j - 1] = np.where(low, ready[g], enter(g + 1, after, stop_low=True, auto_elite=True))
+                mid_elite[g + 1] = layers
+                mid_elite.pop(g + 3, None)
+            pause_reached.pop(g + 2, None)
         if progress and g % 200 == 0:
             progress(f"mdp: floor {g} ({time.time() - t0:.0f}s)")
     return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
                        lambdas=lambdas, smoke_prices=smoke_prices, ready=f32(ready), step=f32(step),
-                       rush=f32(rush), encounter={k: f32(v) for k, v in encounter.items()},
+                       rush=f32(rush), rush_elite=f32(rush_elite),
+                       encounter={k: f32(v) for k, v in encounter.items()},
                        boss={f: f32(v) for f, v in boss_tables.items()}, solve_seconds=time.time() - t0)
 
 
@@ -490,7 +520,7 @@ def tables_key(build: Build, map_id: str, config: MdpConfig) -> str:
 
 
 def save_tables(tables: ValueTables, path: str) -> None:
-    arrays = {"ready": tables.ready, "step": tables.step, "rush": tables.rush,
+    arrays = {"ready": tables.ready, "step": tables.step, "rush": tables.rush, "rush_elite": tables.rush_elite,
               "enc_normal": tables.encounter["normal"], "enc_elite": tables.encounter["elite"],
               "boss_floors": np.array(sorted(tables.boss), dtype=int)}
     if tables.boss:
@@ -505,7 +535,8 @@ def load_tables(path: str, build: Build, map_id: str, config: MdpConfig) -> Valu
         boss = {f: data["boss"][i] for i, f in enumerate(floors)} if floors else {}
         return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
                            lambdas=lambdas, smoke_prices=smoke_prices, ready=data["ready"], step=data["step"],
-                           rush=data["rush"], encounter={"normal": data["enc_normal"], "elite": data["enc_elite"]},
+                           rush=data["rush"], rush_elite=data["rush_elite"],
+                           encounter={"normal": data["enc_normal"], "elite": data["enc_elite"]},
                            boss=boss)
 
 

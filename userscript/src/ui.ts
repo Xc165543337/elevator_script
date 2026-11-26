@@ -239,7 +239,7 @@ export function mountPanel(): void {
         field(label, el, 'wide')
     }
 
-    type BoolKey = 'restock' | 'buyTickets' | 'sellLoot' | 'verbose'
+    type BoolKey = 'restock' | 'rushElites' | 'buyTickets' | 'sellLoot' | 'verbose'
     function check(key: BoolKey, label: string): void {
         const el = h('input', { type: 'checkbox', checked: settings[key] })
         el.addEventListener('change', () => {
@@ -263,6 +263,7 @@ export function mountPanel(): void {
     number('goldReserve', '金币保留线', { min: 0, step: 10000 })
     text('loadout', '携带物资（物品id=数量，逗号分隔）')
     check('restock', '开局前自动补货（不低于金币保留线）')
+    check('rushElites', '连战自动打精英（模型判断同样安全时；每局停顿更少）')
     check('buyTickets', '免费门票用完后购买付费门票（350 金币）')
     check('sellLoot', '正式局结束后出售本局战利品')
     text('sellRarities', '整批出售的稀有度')

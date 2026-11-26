@@ -35,7 +35,7 @@ export const BOSS_WINDOWS = 4 // 窗口 1-3 不同（首回合加成、越战越
 export const RUSH_FLOORS = 10
 export const RUSH_STOP_HP = 0.5 // 服务器在 HP ≤ 50% 时停止连战
 const FIELD_DROP_CHANCE = 0.52 // 服务器 FIELD_CHANCE；F1、首领层及其前一层必掉
-export const MODEL_VERSION = 6
+export const MODEL_VERSION = 7
 
 // ---------------------------------------------------------------------------- 回复道具
 /** 提高有效生命的消耗品（数值来自服务器道具规格） */
@@ -242,6 +242,11 @@ export interface MdpConfig {
     smokePrices: number[]
     /** 精英整备转移核每个 (生命, 精英血量) 格点的战斗次数 */
     pauseSamples: number
+    /**
+     * 同时求解开启「自动打精英」的连战：HP 高于 50% 时连战自己打精英到整备，击杀则继续，否则停在整备
+     * （game.py rush）。求解时间约多 40%
+     */
+    rushElites: boolean
     seed: number
 }
 
@@ -256,6 +261,7 @@ export const DEFAULT_MDP: MdpConfig = {
     lambdas: [0.0, 0.01, 0.03, 0.05, 0.08, 0.12, 0.2, 0.5, 10.0],
     smokePrices: [0.0, 0.03, 0.05, 0.07, 0.1, 1000.0],
     pauseSamples: 96,
+    rushElites: true,
     seed: 0
 }
 
@@ -274,6 +280,8 @@ export interface ValueTables {
     step: Float32Array
     /** 从 ready 状态连战的值 */
     rush: Float32Array
+    /** 开启「自动打精英」连战的值（rushElites 关闭时全为 0） */
+    rushElite: Float32Array
     encNormal: Float32Array
     encElite: Float32Array
     /** 首领层 → [窗口][价格][生命][首领血量] */
@@ -662,6 +670,7 @@ export function* solveSteps(
     const ready = new Float32Array(tableSize)
     const step = new Float32Array(tableSize)
     const rush = new Float32Array(tableSize)
+    const rushElite = new Float32Array(tableSize)
     const arrive = new Float32Array(tableSize)
     const encNormal = new Float32Array(tableSize)
     const encElite = new Float32Array(tableSize)
@@ -674,6 +683,12 @@ export function* solveSteps(
         [top + 1, zeroLayers()],
         [top + 2, zeroLayers()]
     ])
+    const midElite = new Map<number, Float64Array[]>([
+        [top + 1, zeroLayers()],
+        [top + 2, zeroLayers()]
+    ]) // 同上，开启「自动打精英」
+    // 在 h 层从满血精英打到整备的值（回复后打完剩余回合）：[价格][出发生命]
+    const pauseReached = new Map<number, Float64Array>()
 
     const kernels = new Map<string, { kill: Float64Array; draw: Float64Array }>()
     const eliteKernels = new Map<number, { cont: Float64Array; kill: Float64Array; lands: Float64Array }>()
@@ -715,8 +730,8 @@ export function* solveSteps(
         const units = fieldHealIncome(floor, maxHp)
         return (l: number) => lambdas[l] * units
     }
-    /** 连战中进入 h 层的值；after = 本层处理完后的延续 */
-    const enter = (h: number, after: Float64Array, stopLow: boolean): Float64Array => {
+    /** 连战中进入 h 层的值；after = 本层处理完后的延续。autoElite：HP 高于 50% 时连战自己打精英到整备，击杀则继续 */
+    const enter = (h: number, after: Float64Array, stopLow: boolean, autoElite = false): Float64Array => {
         const inc = income(h)
         const out = new Float64Array(LN)
         if (isBossFloor(h)) {
@@ -731,12 +746,19 @@ export function* solveSteps(
         const drawn = mulBT(readyH, L, N, draw, N)
         const eN = row(encNormal, h)
         const eE = row(encElite, h)
+        let auto: Float64Array | null = null
+        if (autoElite) {
+            auto = mulBT(after, L, N, eliteKernel(h).kill, N)
+            const reached = pauseReached.get(h)!
+            for (let k = 0; k < LN; k++) auto[k] += reached[k]
+        }
         for (let l = 0; l < L; l++) {
             for (let i = 0; i < N; i++) {
                 const k = l * N + i
                 const f = fought[k] + drawn[k] // 平局让连战停在该层
                 const normal = stopLow && low[i] ? eN[k] : f
-                out[k] = inc(l) + mix.normal * normal + mix.elite * eE[k] + mix.choice * readyH[k] + mix.loot * after[k]
+                const elite = auto && !low[i] ? auto[k] : eE[k]
+                out[k] = inc(l) + mix.normal * normal + mix.elite * elite + mix.choice * readyH[k] + mix.loot * after[k]
             }
         }
         return out
@@ -746,10 +768,13 @@ export function* solveSteps(
         const off = g * LN
         // 1. 从 g 层 ready 状态发起连战（第一层不做下潜前的 HP 检查）
         if (g + 1 <= top) rush.set(enter(g + 1, mid.get(g + 2)![RUSH_FLOORS - 2], true), off)
-        // 2. g 层 ready：单步、连战或先回复
+        if (config.rushElites && g + 1 <= top) {
+            rushElite.set(enter(g + 1, midElite.get(g + 2)![RUSH_FLOORS - 2], true, true), off)
+        }
+        // 2. g 层 ready：单步、连战（两种）或先回复
         step.set(arrive.subarray((g + 1) * LN, (g + 2) * LN), off)
         const best = new Float64Array(LN)
-        for (let k = 0; k < LN; k++) best[k] = Math.max(step[off + k], rush[off + k])
+        for (let k = 0; k < LN; k++) best[k] = Math.max(step[off + k], rush[off + k], rushElite[off + k])
         ready.set(calmHeal.apply(best, L, N), off)
         const readyG = row(ready, g)
         // 3. g 层的遭遇
@@ -760,8 +785,9 @@ export function* solveSteps(
                 const { cont, kill, lands } = eliteKernel(g)
                 const pause = elitePauseValue(lands, readyG, L, anyHeal, NB)
                 fightValue = mulBT(readyG, L, N, kill, N)
-                const more = mulBT(pause, L, N * NB, cont, N)
-                for (let k = 0; k < LN; k++) fightValue[k] += more[k]
+                const reached = mulBT(pause, L, N * NB, cont, N)
+                pauseReached.set(g, reached)
+                for (let k = 0; k < LN; k++) fightValue[k] += reached[k]
             } else {
                 const { kill, draw } = kernel(kind, g)
                 const both = new Float64Array(kill.length)
@@ -832,17 +858,22 @@ export function* solveSteps(
         }
         // 6. 连战中途进入 g+1 层（需要 ready[g] 做下潜前的 HP 检查）
         if (g + 1 <= top) {
-            const layers: Float64Array[] = []
-            for (let j = 1; j < RUSH_FLOORS; j++) {
-                const after = j === 1 ? row(ready, g + 1) : mid.get(g + 2)![j - 2]
-                const entered = enter(g + 1, after, true)
-                for (let l = 0; l < L; l++)
-                    for (let i = 0; i < N; i++) if (low[i]) entered[l * N + i] = readyG[l * N + i]
-                layers.push(entered)
+            const midLayers = (layers: Map<number, Float64Array[]>, autoElite: boolean) => {
+                const out: Float64Array[] = []
+                for (let j = 1; j < RUSH_FLOORS; j++) {
+                    const after = j === 1 ? row(ready, g + 1) : layers.get(g + 2)![j - 2]
+                    const entered = enter(g + 1, after, true, autoElite)
+                    for (let l = 0; l < L; l++)
+                        for (let i = 0; i < N; i++) if (low[i]) entered[l * N + i] = readyG[l * N + i]
+                    out.push(entered)
+                }
+                out.push(new Float64Array(LN))
+                layers.set(g + 1, out)
+                layers.delete(g + 3)
             }
-            layers.push(new Float64Array(LN))
-            mid.set(g + 1, layers)
-            mid.delete(g + 3)
+            midLayers(mid, false)
+            if (config.rushElites) midLayers(midElite, true)
+            pauseReached.delete(g + 2)
         }
         // 转移核只在逆推经过其区块时用到（本层与连战进入的上一层）：之后释放，F4000 时可省下数百 MB
         const keep = reference(g)
@@ -862,6 +893,7 @@ export function* solveSteps(
         ready,
         step,
         rush,
+        rushElite,
         encNormal,
         encElite,
         boss,

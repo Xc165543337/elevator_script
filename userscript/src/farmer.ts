@@ -166,11 +166,16 @@ export class Farmer {
 
     /** 按设置选择决策策略（测试可覆盖） */
     protected createPolicy(): BossFarmPolicy {
-        const config = { maxFloor: this.settings.maxFloor, balanceGearScore: this.settings.balanceGearScore }
+        const config = {
+            maxFloor: this.settings.maxFloor,
+            balanceGearScore: this.settings.balanceGearScore,
+            rushElites: this.settings.rushElites
+        }
         if (this.settings.policy !== 'markov') return new BossFarmPolicy(this.cal, config)
-        sharedPlanner ??= new Planner(DEFAULT_MARKOV, slicedSolver())
+        const markov = { ...DEFAULT_MARKOV, mdp: { ...DEFAULT_MARKOV.mdp, rushElites: config.rushElites } }
+        if (sharedPlanner?.cfg.mdp.rushElites !== config.rushElites) sharedPlanner = new Planner(markov, slicedSolver())
         sharedPlanner.log = msg => this.log(msg)
-        return new MarkovPolicy(this.cal, config, {}, sharedPlanner)
+        return new MarkovPolicy(this.cal, config, markov, sharedPlanner)
     }
 
     // ------------------------------------------------------------- 控制
@@ -443,7 +448,8 @@ export class Farmer {
     }
 
     /**
-     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）。
+     * 连战按模型的假设设置：10 层、金红不暂停、遇奇遇与精英前停下（逐个决策）；
+     * 策略在同样安全的连战前自行开启「自动打精英」（设置「连战自动打精英」）。
      * 服务器未提供的设置（旧版本）保持不动。
      */
     private async ensureRushSettings(): Promise<void> {

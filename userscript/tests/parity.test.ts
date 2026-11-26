@@ -73,7 +73,7 @@ describe('战斗引擎', () => {
 
 describe('连战风险', () => {
     for (const c of fx.chains) {
-        it(`F${c.state.run.floor} HP ${c.state.run.hp}`, () => {
+        it(`F${c.state.run.floor} HP ${c.state.run.hp}${c.elites ? '（含精英）' : ''}`, () => {
             const cal = new Calibration()
             const risk = chainRisk(
                 runBuild(c.state, AFFIXES),
@@ -82,7 +82,8 @@ describe('连战风险', () => {
                 4,
                 40_000,
                 'mall',
-                seededRng(c.state.run.floor)
+                seededRng(c.state.run.floor),
+                Boolean(c.elites)
             )
             expect(Math.abs(risk - c.risk)).toBeLessThanOrEqual(tolerance(c.risk, 40_000, 40_000))
         })

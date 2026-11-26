@@ -496,3 +496,47 @@ describe('Planner', () => {
         expect(logs.some(m => m.includes('改用阈值规则'))).toBe(true)
     })
 })
+
+// ------------------------------------------------------------------ 连战自动打精英
+describe('连战自动打精英', () => {
+    it('从不优于遇精英暂停；浅层没有损失，深层停下来用烟雾弹 / 回复更好', () => {
+        const LN = tables.lambdas.length * tables.grid.length
+        let shallow = 0
+        let deep = 0
+        for (let k = LN; k < SMALL.maxFloor * LN; k++) {
+            const loss = tables.rush[k] - tables.rushElite[k]
+            expect(loss).toBeGreaterThanOrEqual(-1e-4)
+            if (k < 60 * LN) shallow = Math.max(shallow, loss)
+            else if (k >= 100 * LN) deep = Math.max(deep, loss)
+        }
+        expect(shallow).toBeLessThan(1e-3)
+        expect(deep).toBeGreaterThan(0.05)
+    })
+
+    const rushReady = (flag: boolean): Json => {
+        const s = makeState({ floor: 40, bag: bagOf('coffee'), controls: ['rush', 'down', 'extract'] })
+        s.player.rush_auto_elite = flag
+        return s
+    }
+
+    for (const [loss, auto] of [
+        [0.001, true],
+        [0.01, false]
+    ] as const) {
+        it(`损失 ${loss} 时${auto ? '开启' : '关闭'}「自动打精英」`, () => {
+            const LN = tables.lambdas.length * tables.grid.length
+            const worse = { ...tables, rushElite: tables.rushElite.slice() }
+            for (let k = 40 * LN; k < 41 * LN; k++) worse.rushElite[k] -= loss
+            const policy = makePolicy()
+            policy.planner.set(worse)
+            const d = policy.decide(rushReady(!auto))
+            expect([d.command, d.params]).toEqual(['rush_settings', { auto_elite: auto }])
+            expect(policy.decide(rushReady(auto)).command).toBe('rush')
+        })
+    }
+
+    it('关闭选项后求解与决策都不含此项', () => {
+        const policy = new MarkovPolicy(CAL, { rushElites: false })
+        expect(policy.mcfg.mdp.rushElites).toBe(false)
+    })
+})

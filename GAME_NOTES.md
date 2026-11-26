@@ -43,7 +43,9 @@ A pending temp-gear offer (`run.field_offer`) blocks other moves until `field_pi
     use potions, field items and change temp gear. A boss never retreats.
 - **Rush settings** (`rush_settings`): `floors` 3/5/10, `skip_valuable`, `event_mode` (pause / random / ignore
   events) and `auto_elite`. With `auto_elite` on, a rush fights the first 8 rounds of an elite by itself and
-  stops at its pause (`连战至 F628 · 精英中场`). The agent sets 10 / skip / pause / no auto-elite at run start.
+  stops at its pause (`连战至 F628 · 精英中场`); at HP <= 50% it stops before the elite as before any fight
+  (game.py `rush`). The setting can be changed at any time, also mid-run, without a cooldown. The agent sets
+  10 / skip / pause / no auto-elite at run start and switches auto-elite per rush (`--rush-elites`).
 - **Encounter odds** are shown for the next floor in `run.next_floor` (e.g. `📊 F247：箱34% 怪41% 精12% 奇13%｜金红68.0%(红11.9%)`).
   Since 2026-11-25 the deep-floor mix is chest 34%, normal 41%, elite 12%, event 13% (was 34 / 33 / 20 / 13:
   elites moved to normal monsters). The F1 row and the 12-floor blend are assumed unchanged.

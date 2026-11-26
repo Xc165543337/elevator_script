@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { describe, expect, it } from 'vitest'
-import { Calibration, parseBattleLog } from '../src/combat.ts'
+import { Calibration, chainRisk, parseBattleLog } from '../src/combat.ts'
 import { enemy, fight, fightSegment, makeBuild, withTempGear } from '../src/model.ts'
 import { BossFarmPolicy } from '../src/policy.ts'
 import type { PolicyConfig } from '../src/policy.ts'
@@ -320,5 +320,76 @@ describe('回合上限（2026-11-25 起）', () => {
         expect(fightSegment({ ...foe, elite: true, boss: 0, rounds_fought: 8 })).toEqual([9, 8])
         expect(fightSegment({ ...foe, elite: false, boss: 0 })).toEqual([1, 15])
         expect(fightSegment({ ...foe, elite: true, boss: 3, rounds_fought: 5 })).toEqual([6, 3])
+    })
+})
+
+// ------------------------------------------------------------------ 连战自动打精英
+describe('连战自动打精英', () => {
+    // 在 F165 打普通怪毫发无伤，但打不过每只精英：只有含精英的连战有风险
+    const FRAGILE = makeBuild({
+        hp: 666,
+        atk: 120,
+        defense: 20,
+        agi: 30,
+        luk: 21,
+        pierce: 0.26,
+        leech: 0.06,
+        heavy: 0.38,
+        berserk: 0.075,
+        vampire: 0.1,
+        critMult: 1.9
+    })
+    const fragileState = (autoElite: boolean): Json => {
+        const s = rushState(165, 400, autoElite)
+        s.run.effective_stats = { hp: 666, atk: 120, def: 20, agi: 30, luk: 21 }
+        return s
+    }
+    const rushState = (floor: number, hp: number, autoElite?: boolean): Json => {
+        const s = makeState({
+            hp,
+            bag: [{ id: 'coffee', index: 1, name: 'coffee', quantity: 5 }],
+            controls: ['rush', 'down', 'extract']
+        })
+        s.run.floor = floor
+        if (autoElite !== undefined) s.player.rush_auto_elite = autoElite
+        return s
+    }
+
+    it('同样安全时先开启「自动打精英」，再连战', () => {
+        const policy = makePolicy()
+        const d = policy.decide(rushState(20, 666, false))
+        expect([d.command, d.params]).toEqual(['rush_settings', { auto_elite: true }])
+        const rush = policy.decide(rushState(20, 666, true))
+        expect(rush.command).toBe('rush')
+        expect(rush.reason).toMatch(/含精英$/)
+    })
+
+    it('精英有风险时关闭「自动打精英」', () => {
+        const policy = makePolicy()
+        policy.affixBuild = FRAGILE
+        const d = policy.decide(fragileState(true))
+        expect([d.command, d.params]).toEqual(['rush_settings', { auto_elite: false }])
+        expect(policy.decide(fragileState(false)).command).toBe('rush')
+    })
+
+    it('关闭选项或服务器不报告此设置时，连战从不打精英', () => {
+        expect(makePolicy().decide(rushState(20, 666)).command).toBe('rush')
+        const d = makePolicy({ rushElites: false }).decide(rushState(20, 666, true))
+        expect([d.command, d.params]).toEqual(['rush_settings', { auto_elite: false }])
+    })
+
+    it('无法关闭「自动打精英」时单步', () => {
+        const policy = makePolicy()
+        policy.affixBuild = FRAGILE
+        const s = fragileState(true)
+        policy.ban(165, policy.decide(s)) // 服务器拒绝切换
+        expect(policy.decide(s).command).toBe('down')
+    })
+
+    it('含精英的连战风险计入精英战', () => {
+        const s = rushState(165, 400)
+        const cal = new Calibration({ k_player: 1.0, k_enemy: 1.0 })
+        expect(chainRisk(FRAGILE, s, cal, 4, 4000, 'mall', seededRng(1))).toBe(0)
+        expect(chainRisk(FRAGILE, s, cal, 4, 4000, 'mall', seededRng(1), true)).toBeGreaterThan(0.03)
     })
 })

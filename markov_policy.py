@@ -42,6 +42,8 @@ class MarkovConfig:
     # expected bosses a rush may give up against single steps; it is paid on every rush of the run, so it
     # only absorbs Monte Carlo noise (0.02 let a two-fight rush at 3.6% death risk through at F1205 live)
     rush_tolerance: float = 0.002
+    # expected bosses a rush with 自动打精英 may give up against the best other move (fewer stops per run)
+    elite_rush_tolerance: float = 0.002
     heal_margin: float = 0.002      # a heal / flee must beat the alternative by this many bosses
     prep_margin: float = 0.01       # a field buff / grenade (no budget price) must gain this many bosses
     prep_pairs: int = 3             # best single preparations combined pairwise (buff + buff synergies)
@@ -185,8 +187,8 @@ class MarkovPolicy(BossFarmPolicy):
                  markov: MarkovConfig | None = None, log: Callable[[str], None] | None = None):
         super().__init__(cal, config)
         markov = markov or MarkovConfig()
-        # one source of truth for the server's round limits: the policy config
-        self.mcfg = replace(markov, mdp=replace(markov.mdp, rules=self.cfg.rules))
+        # one source of truth for the server's round limits and rush options: the policy config
+        self.mcfg = replace(markov, mdp=replace(markov.mdp, rules=self.cfg.rules, rush_elites=self.cfg.rush_elites))
         self.planner = Planner(self.mcfg, log)
         self._rng = np.random.default_rng()
         self._wish_sent = False   # a wish preview was requested; confirm it on the next decision
@@ -517,13 +519,18 @@ class MarkovPolicy(BossFarmPolicy):
         lam, grid = float(tables.lambdas[li]), tables.grid
         q_step = float(np.interp(e, grid, tables.step[g][li]))
         q_rush = float(np.interp(e, grid, tables.rush[g][li]))
-        summary = f"step {q_step:.2f} rush {q_rush:.2f}, lam {lam:g}, stock {stock:.1f}"
+        elites = self.mcfg.mdp.rush_elites and "rush_auto_elite" in (state.get("player") or {})
+        q_elite = float(np.interp(e, grid, tables.rush_elite[g][li])) if elites else -np.inf
+        summary = (f"step {q_step:.2f} rush {q_rush:.2f}" + (f" (with elites {q_elite:.2f})" if elites else "")
+                   + f", lam {lam:g}, stock {stock:.1f}")
         if self.mcfg.extract_below > 0 and "extract" in ctr and not self.greedy(run):
             outlook = self._boss_outlook(state, g)
             if outlook < self.mcfg.extract_below:
                 return Decision("extract", {}, f"{summary}: expected further bosses {outlook:.2f} < "
                                               f"{self.mcfg.extract_below:g} -> extract and bank the bag")
         curve = np.maximum(tables.step[g][li], tables.rush[g][li])
+        if elites:
+            curve = np.maximum(curve, tables.rush_elite[g][li])
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, self._heal_options(run, False))
         if option and q_heal > q_go + self.mcfg.heal_margin:
             return Decision(option.decision.command, option.decision.params,
@@ -531,8 +538,10 @@ class MarkovPolicy(BossFarmPolicy):
         if "rush" in ctr and "down" in ctr and entry_heal_pending(run):
             return Decision("down", {}, summary + " -> step (healing on floor entry pending: a rush would"
                                                   " auto-fight once it lifts HP above 50%)")
-        if "rush" in ctr and (q_rush >= q_step - self.mcfg.rush_tolerance or "down" not in ctr):
-            return Decision("rush", {}, summary + " -> rush")
+        if "rush" in ctr:
+            auto = q_elite >= max(q_step, q_rush) - self.mcfg.elite_rush_tolerance
+            if auto or q_rush >= q_step - self.mcfg.rush_tolerance or "down" not in ctr:
+                return self._rush(state, ctr, auto, summary + " -> rush")
         if "down" in ctr:
             return Decision("down", {}, summary + " -> step")
         return super()._advance(state, ctr)

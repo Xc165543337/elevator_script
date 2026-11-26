@@ -380,3 +380,31 @@ def test_banks_the_bag_instead_of_fighting_a_hopeless_boss(policy):
     assert policy.decide(s).command == "extract"
     s["controls"] = [c for c in s["controls"] if c["command"] != "extract"]
     assert policy.decide(s).command == "use"                               # smoke: ends the run as an extraction
+
+
+# ------------------------------------------------------------------ rushing through elites (自动打精英)
+def test_rushing_through_elites_never_beats_stopping_and_is_free_when_shallow(tables):
+    assert np.all(tables.rush_elite[1:200] <= tables.rush[1:200] + 1e-6)
+    assert np.allclose(tables.rush_elite[1:60], tables.rush[1:60], atol=1e-3)   # shallow: elites are no threat
+    assert (tables.rush[100:200] - tables.rush_elite[100:200]).max() > 0.05     # deep: a stop to smoke / heal pays
+
+
+def _rush_ready(flag):
+    s = state(floor=40, hp=666, bag=bag_of("coffee"), controls=("rush", "down", "extract"))
+    s["player"]["rush_auto_elite"] = flag
+    return s
+
+
+@pytest.mark.parametrize("loss, auto", [(0.001, True), (0.01, False)])
+def test_rushes_through_elites_within_the_tolerance(tables, tmp_path, loss, auto):
+    worse = replace(tables, rush_elite=tables.rush_elite.copy())
+    worse.rush_elite[40] -= loss
+    policy = make_policy(worse, tmp_path)
+    switch = policy.decide(_rush_ready(not auto))
+    assert (switch.command, switch.params) == ("rush_settings", {"auto_elite": auto}), switch.reason
+    assert policy.decide(_rush_ready(auto)).command == "rush"
+
+
+def test_rush_elites_option_reaches_the_solver(tmp_path):
+    p = MarkovPolicy(CAL, PolicyConfig(rush_elites=False), MarkovConfig(cache_dir=str(tmp_path)))
+    assert not p.mcfg.mdp.rush_elites

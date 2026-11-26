@@ -58,6 +58,8 @@ export interface MarkovConfig {
     fromFloor: number
     /** 连战可比单步少的期望首领（每次连战都要付，只用来吸收蒙特卡洛噪声） */
     rushTolerance: number
+    /** 开启「自动打精英」的连战可比其他最优走法少的期望首领（每局停顿更少） */
+    eliteRushTolerance: number
     /** 回复 / 逃跑须多出的期望首领 */
     healMargin: number
     /** 局内增益 / 手雷（无预算价格）须多出的期望首领 */
@@ -84,6 +86,7 @@ export interface MarkovConfig {
 export const DEFAULT_MARKOV: MarkovConfig = {
     fromFloor: 30,
     rushTolerance: 0.002,
+    eliteRushTolerance: 0.002,
     healMargin: 0.002,
     prepMargin: 0.01,
     prepPairs: 3,
@@ -213,7 +216,7 @@ export class Planner {
     failure: string | null = null
 
     constructor(
-        private readonly cfg: MarkovConfig,
+        readonly cfg: MarkovConfig,
         private readonly solver: TableSolver,
         /** 求解进度与结果的去处（换成当前运行器的日志） */
         public log: (msg: string) => void = () => {}
@@ -277,7 +280,9 @@ export class MarkovPolicy extends BossFarmPolicy {
         planner?: Planner
     ) {
         super(cal, config)
-        this.mcfg = { ...DEFAULT_MARKOV, ...markov }
+        const merged = { ...DEFAULT_MARKOV, ...markov }
+        // 连战选项只有一个来源：策略配置
+        this.mcfg = { ...merged, mdp: { ...merged.mdp, rushElites: this.cfg.rushElites } }
         this.planner = planner ?? new Planner(this.mcfg, blockingSolver)
     }
 
@@ -740,14 +745,20 @@ export class MarkovPolicy extends BossFarmPolicy {
         const rushRow = tableRow(t, t.rush, g, li)
         const qStep = interpValue(stepRow, 0, grid, e)
         const qRush = interpValue(rushRow, 0, grid, e)
-        const summary = `单步 ${qStep.toFixed(2)} 连战 ${qRush.toFixed(2)}，回复价 ${lam}，库存 ${stock.toFixed(1)}`
+        const elites = this.mcfg.mdp.rushElites && t.config.rushElites && 'rush_auto_elite' in (state.player || {})
+        const eliteRow = elites ? tableRow(t, t.rushElite, g, li) : null
+        const qElite = eliteRow ? interpValue(eliteRow, 0, grid, e) : -Infinity
+        const summary =
+            `单步 ${qStep.toFixed(2)} 连战 ${qRush.toFixed(2)}` +
+            (eliteRow ? `（含精英 ${qElite.toFixed(2)}）` : '') +
+            `，回复价 ${lam}，库存 ${stock.toFixed(1)}`
         if (this.mcfg.extractBelow > 0 && ctr.has('extract') && !this.greedy(run)) {
             const outlook = this.bossOutlook(state, g)
             if (outlook < this.mcfg.extractBelow) {
                 return decision('extract', {}, `${summary}：预计还能击败 ${outlook.toFixed(2)} 个首领 → 撤离带回背包`)
             }
         }
-        const curve = stepRow.map((v, i) => Math.max(v, rushRow[i]))
+        const curve = stepRow.map((v, i) => Math.max(v, rushRow[i], eliteRow ? eliteRow[i] : -Infinity))
         const [option, qHeal, qGo] = this.choose(e, lam, maxHp, curve, grid, this.healOptions(run, false))
         if (option && qHeal > qGo + this.mcfg.healMargin) {
             return decision(
@@ -759,8 +770,11 @@ export class MarkovPolicy extends BossFarmPolicy {
         if (ctr.has('rush') && ctr.has('down') && entryHealPending(run)) {
             return decision('down', {}, `${summary} → 单步（进层回复未结算：连战会在回复过半血后自动开打）`)
         }
-        if (ctr.has('rush') && (qRush >= qStep - this.mcfg.rushTolerance || !ctr.has('down'))) {
-            return decision('rush', {}, `${summary} → 连战`)
+        if (ctr.has('rush')) {
+            const auto = qElite >= Math.max(qStep, qRush) - this.mcfg.eliteRushTolerance
+            if (auto || qRush >= qStep - this.mcfg.rushTolerance || !ctr.has('down')) {
+                return this.rush(state, ctr, auto, `${summary} → 连战`)
+            }
         }
         if (ctr.has('down')) return decision('down', {}, `${summary} → 单步`)
         return super.advance(state, ctr)

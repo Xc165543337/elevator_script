@@ -100,6 +100,9 @@ def chains() -> list:
                  "player": PLAYER}
         b = run_build(state, AFFIXES)
         out.append({"state": state, "risk": chain_risk(b, state, cal, samples=N, rng=np.random.default_rng(floor))})
+        # a rush with 自动打精英 on: elites fought up to their pause on the way
+        out.append({"state": state, "elites": True,
+                    "risk": chain_risk(b, state, cal, samples=N, rng=np.random.default_rng(floor), elites=True)})
     return out
 
 

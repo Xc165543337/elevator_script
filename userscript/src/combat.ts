@@ -6,7 +6,7 @@
 // 双向伤害倍率（策划的平衡性调整）再与公式比较。
 // ============================================================================
 
-import { BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, effAtk, effDef, fight, fightSegment, foeAt } from './model.ts'
+import { BEAT_EVERY, BEAT_TAKEN, BOSS_WINDOW, effAtk, effDef, fight, fightSegment, floorMix, foeAt } from './model.ts'
 import type { Build, Foe } from './model.ts'
 import { buildEffects } from './heirlooms.ts'
 import { defaultRng } from './rng.ts'
@@ -218,7 +218,8 @@ export function estimate(
 
 /**
  * 接下来 fights 层每层都是普通怪、连续作战且中途不回血（连战的情形）时的死亡概率。
- * 用于在连战与单步之间选择。
+ * 用于在连战与单步之间选择。elites：开启「自动打精英」的连战——每场按该层精英占战斗的比例是精英，
+ * 打到整备为止；精英在整备时仍存活则该样本的连战停下。
  */
 export function chainRisk(
     build: Build,
@@ -227,16 +228,35 @@ export function chainRisk(
     fights = 4,
     samples = 600,
     mapId = 'mall',
-    rng: Rng = defaultRng
+    rng: Rng = defaultRng,
+    elites = false
 ): number {
     const run = state.run
     const b = tuned(build, cal)
-    let hp: Float64Array = new Float64Array(samples).fill(run.hp)
-    let shield: Float64Array = new Float64Array(samples).fill(run.shield || 0)
+    const hp = new Float64Array(samples).fill(run.hp)
+    const shield = new Float64Array(samples).fill(run.shield || 0)
+    const going = new Uint8Array(samples).fill(1) // 仍在连战（只有精英整备会让连战停下）
     for (let k = 1; k <= fights; k++) {
-        const res = fight(b, hp, shield, foeAt('normal', run.floor + k, mapId, b), { boss: false, rng })
-        hp = res.hp.map(v => (v <= 0 ? -1.0 : v))
-        shield = res.shield
+        const floor = run.floor + k
+        const normal = fight(b, hp, shield, foeAt('normal', floor, mapId, b), { boss: false, rng })
+        let elite: ReturnType<typeof fight> | null = null
+        let met: Uint8Array | null = null
+        if (elites) {
+            const mix = floorMix(floor)
+            const foe: Foe = { ...foeAt('elite', floor, mapId, b), elite: true, rounds_fought: 0 }
+            const [first, rounds] = fightSegment(foe)
+            elite = fight(b, hp, shield, foe, { boss: false, startRound: first, rounds, rng })
+            const share = mix.elite / (mix.elite + mix.normal)
+            met = new Uint8Array(samples)
+            for (let i = 0; i < samples; i++) met[i] = going[i] && rng.random() < share ? 1 : 0
+        }
+        for (let i = 0; i < samples; i++) {
+            if (!going[i]) continue
+            const res = met?.[i] ? elite! : normal
+            hp[i] = res.hp[i] <= 0 ? -1.0 : res.hp[i] // 阵亡的样本保持阵亡
+            shield[i] = res.shield[i]
+            if (met?.[i] && elite!.ehp[i] > 0) going[i] = 0
+        }
     }
     return hp.filter(v => v <= 0).length / samples
 }
