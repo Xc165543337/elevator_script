@@ -394,10 +394,15 @@ class LiveTrial:
         return self.client.state
 
     def call(self, command: str, params: dict) -> dict:
+        """Send one move. After a network error the move may have reached the server anyway: resend it
+        only if the state's revision did not move (a second 压舱盾匣 once cost 9% HP that way)."""
         import requests
+        before = self.client.revision
         for attempt in range(40):
             try:
                 time.sleep(self.delay)
+                if attempt and self._applied(before):
+                    return {}
                 return self.client.command(command, params)
             except GameError as err:
                 if err.code == "cooldown":
@@ -415,6 +420,14 @@ class LiveTrial:
                 except (requests.RequestException, ValueError):
                     pass
         raise RuntimeError(f"command {command} failed repeatedly")
+
+    def _applied(self, before: str) -> bool:
+        import requests
+        try:
+            self.client.refresh()
+        except (requests.RequestException, ValueError):
+            return False
+        return self.client.revision != before
 
 
 def replay(live: LiveTrial, route: dict, log=print, trace=None) -> dict:
