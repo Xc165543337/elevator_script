@@ -644,7 +644,11 @@ def load_tables(path: str, build: Build, map_id: str, config: MdpConfig) -> Valu
     grid, boss_grid, lambdas, smoke_prices = grids(config)
     with np.load(path) as data:
         floors = data["boss_floors"].tolist()
-        boss = {f: data["boss"][i] for i, f in enumerate(floors)} if floors else {}
+        # Read the stacked boss tables once: every data["boss"] decompresses the whole array again, and a
+        # slice per floor kept its own full copy alive - about 200 copies at F4000, many GB when a resumed
+        # run loaded its tables from the cache.
+        stacked = data["boss"] if floors else None
+        boss = {f: stacked[i] for i, f in enumerate(floors)} if floors else {}
         return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
                            lambdas=lambdas, smoke_prices=smoke_prices, ready=data["ready"], step=data["step"],
                            rush=data["rush"], rush_elite=data["rush_elite"],
