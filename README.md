@@ -65,7 +65,7 @@ as safe, so early floors pass without a stop at every elite (`--rush-elites off`
 | `markov_policy.py` | `MarkovPolicy`: `BossFarmPolicy` whose heal/fight/flee/rush/step decisions come from the solved tables (`--policy markov`). Tables are cached in `cache/`. |
 | `offline.py` | Plays complete runs offline against the game's own engine (from the bot repository), for policy comparisons. |
 | `trial.py` | The weekly fixed-seed trial 「来自群星的寓言集」: searches the deepest route in the local engine, then replays it live with a state check after every move. |
-| `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop when all rainbows are unlocked. |
+| `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop once all rainbows and blessing pieces are collected. |
 | `tests/` | Unit tests for the pure logic (`python -m pytest -q tests`). |
 | `docs/` | Game formulas, in-game guide dump, notes (`GAME_NOTES.md`). |
 

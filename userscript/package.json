@@ -1,7 +1,7 @@
 {
     "name": "elevator-farmer",
     "private": true,
-    "version": "1.3.0",
+    "version": "1.3.1",
     "description": "无尽电梯自动刷首领油猴脚本（Python 版 elevator_agent 的浏览器移植）",
     "type": "module",
     "engines": {

@@ -175,6 +175,13 @@ class Farmer:
     def rainbow_status(self) -> dict[str, bool]:
         return {r["name"]: r["unlocked"] for r in self.client.state["atlas"]["rainbow"]}
 
+    def left_to_collect(self) -> int | None:
+        """None while a rainbow item is missing (farm on); otherwise the blessing pieces still missing,
+        0 when there is nothing left that boss kills can drop."""
+        if not all(self.rainbow_status().values()):
+            return None
+        return heirlooms.missing_total(self.client.state.get("heirlooms"))
+
     def print_status(self) -> None:
         st = self.client.state
         atlas, player = st["atlas"], st["player"]
@@ -293,7 +300,10 @@ class Farmer:
             return
         sets, missing = found.get("sets") or {}, heirlooms.missing_by_set(found)
         names = ", ".join(f"{sets.get(k, {}).get('name', k)} ({missing.get(k, 0)} missing)" for k in self.focus)
-        self.log(f"pursuing {names}: {heirlooms.new_drop_chance(found, self.focus):.0%} of shining drops are new pieces")
+        chance = heirlooms.new_drop_chance(found, self.focus)
+        self.log(f"pursuing {names}: {chance:.0%} of shining drops are new pieces")
+        if not chance and any(missing.values()):
+            self.log("WARNING: both pursued sets are complete while other sets miss pieces; --focus auto pursues those")
 
     def start_run(self, loadout: dict[str, int]) -> None:
         if self.args.mode == "sim":
@@ -447,9 +457,12 @@ class Farmer:
                 time.sleep(30)
             if not self.client.state.get("run"):
                 if self.args.mode == "real":
-                    if all(self.rainbow_status().values()):
-                        self.log("all rainbow items collected - stopping")
+                    left = self.left_to_collect()
+                    if left == 0:
+                        self.log("all rainbow items and blessing pieces collected - stopping")
                         break
+                    if left is not None and n == 1:
+                        self.log(f"all rainbow items collected; farming on for {left} missing blessing pieces")
                     if not self.ensure_ticket():
                         self.log("no tickets available - stopping")
                         break

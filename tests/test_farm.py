@@ -190,3 +190,15 @@ def test_new_drop_chance_follows_the_server_weights():
     # S1: 2 / (2 + 3) = 0.4; S2: all missing = 1.0; equal odds between the two sets
     assert heirlooms.new_drop_chance(coll, ["S1", "S2"]) == pytest.approx(0.7)
     assert heirlooms.missing_by_set(coll) == {"S1": 1, "S2": 4, "S3": 4, "S4": 4}
+
+
+def test_farming_goes_on_after_the_rainbows_while_blessing_pieces_are_missing(tmp_path):
+    args = build_parser().parse_args(["--mode", "real", "--delay", "0", "--log-dir", str(tmp_path)])
+    atlas = {"rainbow": [{"name": "熔阳刻痕", "unlocked": True}]}
+    missing_four = _collection({p: 1 for p in _collection({})["pieces"] if not p.startswith("S4")})
+    farmer = Farmer(args, client=RecordingClient({"atlas": atlas, "heirlooms": missing_four}))
+    assert farmer.left_to_collect() == 4
+    complete = _collection({p: 1 for p in _collection({})["pieces"]})
+    assert Farmer(args, client=RecordingClient({"atlas": atlas, "heirlooms": complete})).left_to_collect() == 0
+    rainbow_missing = {"rainbow": [{"name": "熔阳刻痕", "unlocked": False}]}
+    assert Farmer(args, client=RecordingClient({"atlas": rainbow_missing, "heirlooms": complete})).left_to_collect() is None
