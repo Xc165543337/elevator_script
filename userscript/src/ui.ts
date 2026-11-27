@@ -199,7 +199,11 @@ export function mountPanel(): void {
         form.append(wrap)
     }
 
-    function select<K extends 'mode' | 'policy' | 'map'>(key: K, label: string, options: [string, string][]): void {
+    function select<K extends 'mode' | 'policy' | 'objective' | 'map'>(
+        key: K,
+        label: string,
+        options: [string, string][]
+    ): void {
         const el = h('select')
         for (const [value, caption] of options) el.append(h('option', { value, textContent: caption }))
         el.value = settings[key]
@@ -251,7 +255,7 @@ export function mountPanel(): void {
         refresh()
     }
 
-    type NumKey = 'runs' | 'goldReserve' | 'delay' | 'balanceGearScore'
+    type NumKey = 'runs' | 'goldReserve' | 'delay' | 'balanceGearScore' | 'goldPerBoss'
     function number(
         key: NumKey | 'maxFloor',
         label: string,
@@ -301,6 +305,11 @@ export function mountPanel(): void {
         ['threshold', '阈值规则'],
         ['markov', '马尔可夫（后台求解约 5 分钟、内存约 600 MB；求解完成前用阈值规则）']
     ])
+    select('objective', '马尔可夫目标', [
+        ['bosses', '首领数'],
+        ['gold', '金币：带回的物资 + 首领（划算时撤离）']
+    ])
+    number('goldPerBoss', '金币目标：每个首领值多少金币', { min: 1, step: 100000 })
     number('runs', '局数', { min: 1 })
     select('map', '地图', MAPS)
     focusPicker()

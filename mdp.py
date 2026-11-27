@@ -42,7 +42,48 @@ BOSS_WINDOWS = 4             # windows 1-3 differ (first-round bonus, berserk ra
 RUSH_FLOORS = 10             # floors a rush descends at most (server setting)
 RUSH_STOP_HP = 0.5           # the server stops a rush at HP <= 50%
 FIELD_DROP_CHANCE = 0.52     # server FIELD_CHANCE; guaranteed on F1, boss floors and the floor before
-MODEL_VERSION = 7            # bump when the dynamics change, to invalidate cached tables
+
+# Gold objective: expected run loot (bag + safe box, million gold) by floor, measured in the game engine
+# with the threshold agent (3 runs per map, real mode). A bag holds about a thousand items worth 2k-48k
+# gold, so its value at a floor varies little between runs and a curve stands in for it. Beyond the
+# last point the curve goes on with the slope of its last segment.
+LOOT_CURVES = {
+    "mall": ((0, 0.0), (50, 0.49), (100, 0.75), (200, 1.71), (300, 3.44), (500, 6.11), (800, 10.14),
+             (1000, 12.42), (1200, 14.08), (1500, 15.99)),
+    "subway": ((0, 0.0), (50, 0.66), (100, 1.41), (200, 2.93), (300, 4.39), (500, 7.40), (800, 10.12)),
+    "abyss": ((0, 0.0), (50, 1.02), (100, 2.12), (200, 4.27), (300, 6.22), (500, 8.47)),
+    "auction": ((0, 0.0), (25, 0.68), (50, 1.23), (100, 2.39), (150, 3.78), (200, 4.77), (300, 6.22), (400, 7.32),
+                (500, 8.14), (600, 8.78)),
+    "tide": ((0, 0.0), (25, 0.58), (50, 1.16), (100, 2.14), (150, 3.10), (200, 3.82), (300, 4.94), (400, 5.71)),
+    "zenith": ((0, 0.0), (25, 0.60), (50, 1.18), (100, 2.20), (150, 3.11), (200, 4.14)),
+}
+SAFE_KEPT = 0.2              # million gold the 4-slot safe box keeps on death (best four items, measured)
+
+
+def loot_at(map_id: str, floor: int) -> float:
+    """Expected run loot at `floor` in million gold (LOOT_CURVES; unmeasured maps use the mall curve)."""
+    points = LOOT_CURVES.get(map_id, LOOT_CURVES["mall"])
+    xs = np.array([p[0] for p in points], dtype=float)
+    ys = np.array([p[1] for p in points])
+    if floor <= xs[-1]:
+        return float(np.interp(floor, xs, ys))
+    slope = (ys[-1] - ys[-2]) / (xs[-1] - xs[-2])
+    return float(ys[-1] + max(0.0, slope) * (floor - xs[-1]))
+
+
+def loot_profile(config: "MdpConfig", map_id: str, top: int) -> tuple[np.ndarray, np.ndarray]:
+    """(gain, risk) per floor 0..top+2 in model units: loot found on arriving at a floor, and what a death
+    on that floor loses (the bag outside the safe box). Zeros unless config.gold."""
+    if not config.gold:
+        return np.zeros(top + 3), np.zeros(top + 3)
+    loot = np.array([loot_at(map_id, g) for g in range(top + 3)])
+    return np.diff(loot, prepend=0.0), np.maximum(loot - SAFE_KEPT, 0.0)
+
+
+def death_of(*kernels: np.ndarray) -> np.ndarray:
+    """P(death) per start state of a kernel split into survival parts (rows of kill / draw / cont / lands)."""
+    return np.clip(1.0 - sum(k.sum(axis=1) for k in kernels), 0.0, 1.0)
+MODEL_VERSION = 8            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -157,6 +198,11 @@ class MdpConfig:
     # also solve rushes with 自动打精英 on: the rush fights an elite up to its pause by itself while HP is
     # above 50%, continues on a kill and stops at the pause otherwise (game.py `rush`). Costs ~40% more time.
     rush_elites: bool = True
+    # Objective. Bosses (default): +boss_value per formal boss kill. Gold: the unit is a million gold, a boss
+    # kill is worth boss_value of it, loot found counts when found (loot_profile) and a death loses the bag
+    # outside the safe box; extracting (between floors, in a fight, during a boss) banks it.
+    gold: bool = False
+    boss_value: float = 1.0
     seed: int = 0
 
 
@@ -285,10 +331,15 @@ def elite_pause_kernel(build: Build, foe: dict, grid: np.ndarray, enemy_grid: np
     return cont.reshape(len(cont), len(grid), len(enemy_grid)).sum(axis=2) + kill
 
 
-def elite_pause_value(lands: np.ndarray, ready: np.ndarray, heal: "_Closure", n_enemy: int) -> np.ndarray:
+def elite_pause_value(lands: np.ndarray, ready: np.ndarray, heal: "_Closure", n_enemy: int,
+                      death_cost: float = 0.0) -> np.ndarray:
     """Values at the elite pause, [price, hp point, elite-hp point]: heal with any item, then fight on.
-    lands: elite_pause_kernel; ready: (prices, hp points) values of this floor's ready state."""
-    return heal((ready @ lands.T).reshape(len(ready), -1, n_enemy))
+    lands: elite_pause_kernel; ready: (prices, hp points) values of this floor's ready state;
+    death_cost: what a death in the remaining rounds loses (gold objective)."""
+    values = ready @ lands.T
+    if death_cost:
+        values = values - death_cost * death_of(lands)[None, :]
+    return heal(values.reshape(len(ready), -1, n_enemy))
 
 
 def _split(x: np.ndarray, grid: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -394,8 +445,23 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             kernels[key] = first, elite_pause_kernel(build, foe, grid, boss_grid, config.pause_samples, rng, rules)
         return kernels[key]
 
+    gain, risk = loot_profile(config, map_id, top)
+    gold = config.gold
+
     def income(floor: int) -> np.ndarray:
-        return (lambdas * field_heal_income(floor, max_hp))[:, None]
+        return (lambdas * field_heal_income(floor, max_hp))[:, None] + gain[floor]
+
+    def died(h: int, *parts: np.ndarray) -> np.ndarray:
+        """Value lost to deaths in a fight on floor h whose survivors land per `parts` (gold objective)."""
+        return risk[h] * death_of(*parts)[None, :] if gold else 0.0
+
+    def banked(values: np.ndarray, h: int) -> np.ndarray:
+        """Gold objective: extracting is worth 0 more (it banks the bag); the dead state loses it."""
+        if not gold:
+            return values
+        out = np.maximum(values, 0.0)
+        out[..., 0] = -risk[h]
+        return out
 
     def enter(h: int, after: np.ndarray, stop_low: bool, auto_elite: bool = False) -> np.ndarray:
         """Value of entering floor h during a rush; `after` = continuation once the floor is resolved.
@@ -405,16 +471,16 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             return income(h) + boss_start[h]
         mix = floor_mix(h, rules)
         killed, drawn = kernel("normal", h)
-        fought = after @ killed.T + ready[h] @ drawn.T          # a draw halts the rush on that floor
+        fought = after @ killed.T + ready[h] @ drawn.T - died(h, killed, drawn)   # a draw halts the rush there
         normal = np.where(low, encounter["normal"][h], fought) if stop_low else fought
         elite = encounter["elite"][h]
         if auto_elite:
             if rules.elite_break:
-                (_, kill), _ = elite_kernels(h)
-                auto = after @ kill.T + pause_reached[h]
+                (cont, kill), _ = elite_kernels(h)
+                auto = after @ kill.T + pause_reached[h] - died(h, cont, kill)
             else:
                 killed, drawn = kernel("elite", h)
-                auto = after @ killed.T + ready[h] @ drawn.T
+                auto = after @ killed.T + ready[h] @ drawn.T - died(h, killed, drawn)
             elite = np.where(low, elite, auto)
         value = mix["normal"] * normal + mix["elite"] * elite + mix["choice"] * ready[h] + mix["loot"] * after
         return income(h) + value
@@ -427,29 +493,33 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             rush_elite[g] = enter(g + 1, mid_elite[g + 2][RUSH_FLOORS - 2], stop_low=True, auto_elite=True)
         # 2. ready on g: step, rush (either way) or heal first
         step[g] = arrive[g + 1]
-        ready[g] = calm_heal(np.maximum(np.maximum(step[g], rush[g]), rush_elite[g]))
+        ready[g] = banked(calm_heal(np.maximum(np.maximum(step[g], rush[g]), rush_elite[g])), g)
         # 3. encounters on g
         for kind in ("normal", "elite"):
             foe = enemy(kind, g, map_id)
             if kind == "elite" and rules.elite_break:
                 (cont, kill), lands = elite_kernels(g)
-                pause = elite_pause_value(lands, ready[g], any_heal, nb)              # (L, N, Nb)
+                pause = elite_pause_value(lands, ready[g], any_heal, nb, risk[g])     # (L, N, Nb)
+                if gold:
+                    pause = np.maximum(pause, 0.0)                                  # extract at the pause
+                    pause[:, 0, :] = -risk[g]                                       # dead there: the bag is lost
                 pause_reached[g] = pause.reshape(nl, -1) @ cont.T
-                fight_value = ready[g] @ kill.T + pause_reached[g]
+                fight_value = ready[g] @ kill.T + pause_reached[g] - died(g, cont, kill)
             else:
                 killed, drawn = kernel(kind, g)
-                fight_value = ready[g] @ (killed + drawn).T
+                fight_value = ready[g] @ (killed + drawn).T - died(g, killed, drawn)
             fail_at = interp_matrix(np.maximum(grid - flee_hit(build, foe), 0.0), grid)
             p = flee_chance(build, g)
             flee_value = p * ready[g] + (1 - p) * (fight_value @ fail_at.T)
-            flee_value[:, 0] = 0.0
+            flee_value[:, 0] = -risk[g]
             smoke_value = ready[g] - smoke_prices[:, None]        # smoke bomb: leave unharmed, stay on g
-            smoke_value[:, 0] = 0.0
-            encounter[kind][g] = any_heal(np.maximum(np.maximum(fight_value, flee_value), smoke_value))
+            smoke_value[:, 0] = -risk[g]
+            encounter[kind][g] = banked(any_heal(np.maximum(np.maximum(fight_value, flee_value), smoke_value)), g)
         # 4. boss on g
         if is_boss_floor(g):
             boss_tables[g] = _solve_boss(build, foe_at("boss", g, map_id, build), grid, boss_grid, lambdas,
-                                         1.0 + ready[g] @ full, any_heal, config, rng)
+                                         config.boss_value + ready[g] @ full, any_heal, config, rng,
+                                         death_cost=risk[g])
             boss_start[g] = boss_tables[g][0][:, :, -1]
         # 5. single-step arrival on g
         if is_boss_floor(g):
@@ -458,6 +528,8 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
             mix = floor_mix(g, rules)
             arrive[g] = income(g) + (mix["normal"] * encounter["normal"][g] + mix["elite"] * encounter["elite"][g]
                                      + (mix["choice"] + mix["loot"]) * ready[g])
+        if gold:
+            arrive[g][:, 0] = -risk[g]
         # 6. mid-rush values entering g+1 (needs ready[g] for the pre-descent HP check)
         if g + 1 <= top:
             layers = np.zeros((RUSH_FLOORS, nl, n))
@@ -489,8 +561,9 @@ def f32(a: np.ndarray) -> np.ndarray:
 
 def _solve_boss(build: Build, foe: dict, grid: np.ndarray, boss_grid: np.ndarray, lambdas: np.ndarray,
                 win_value: np.ndarray, heal: _Closure, config: MdpConfig,
-                rng: np.random.Generator) -> np.ndarray:
-    """Values before each boss window: [window, lambda, hp, boss hp]. A kill is worth 1 + ready(full HP)."""
+                rng: np.random.Generator, death_cost: float = 0.0) -> np.ndarray:
+    """Values before each boss window: [window, lambda, hp, boss hp]. A kill is worth boss_value + ready
+    (full HP). Gold objective: a death loses death_cost, and extracting during the fight is worth 0."""
     n, nb, nl = len(grid), len(boss_grid), len(lambdas)
     values = np.zeros((BOSS_WINDOWS, nl, n, nb))
     win_term = win_value[:, None]                                   # (L, 1)
@@ -499,7 +572,13 @@ def _solve_boss(build: Build, foe: dict, grid: np.ndarray, boss_grid: np.ndarray
     def window_value(w: int, nxt: np.ndarray) -> np.ndarray:
         p, win = kernels[w]
         cont = nxt.reshape(nl, n * nb) @ p.T + win_term * win[None, :]
-        return heal(cont.reshape(nl, n, nb))
+        if config.gold:
+            cont = cont - death_cost * np.clip(1.0 - p.sum(axis=1) - win, 0.0, 1.0)[None, :]
+        out = heal(cont.reshape(nl, n, nb))
+        if config.gold:
+            out = np.maximum(out, 0.0)
+            out[:, 0, :] = -death_cost
+        return out
 
     last = np.zeros((nl, n, nb))
     for _ in range(config.boss_iterations):

@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
@@ -25,6 +26,7 @@ from client import ElevatorClient, GameError
 import heirlooms
 from combat import Calibration, battle_enemy
 from markov_policy import MarkovConfig, MarkovPolicy
+from mdp import MdpConfig
 from model import LEGACY_RULES, LIVE_RULES, floor_mix, parse_floor_odds
 from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
 
@@ -56,6 +58,7 @@ def format_mix(mix: dict[str, float]) -> str:
     return " ".join(f"{kind} {p:.0%}" for kind, p in mix.items())
 
 
+_BANKED = re.compile(r"保住\s*([\d,]+)\s*金")   # run end: "安全撤离 · 第 704 层 · 保住 10,143,144 金物资"
 SELL_KINDS = ("collection", "material")   # supplies (potions, in-game items), crates and gear are never sold
 
 
@@ -94,7 +97,9 @@ class Farmer:
                               relic_loot_value=args.relic_loot_value, rush_elites=args.rush_elites == "on",
                               rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
         if args.policy == "markov":
-            markov = MarkovConfig(cache_dir=os.path.join(HERE, "cache"), background=args.solve == "background")
+            gold = args.objective == "gold"
+            markov = MarkovConfig(cache_dir=os.path.join(HERE, "cache"), background=args.solve == "background",
+                                  mdp=MdpConfig(gold=gold, boss_value=args.gold_per_boss / 1e6 if gold else 1.0))
             self.policy = MarkovPolicy(self.cal, config, markov, log=self.log)
         else:
             self.policy = BossFarmPolicy(self.cal, config)
@@ -174,6 +179,13 @@ class Farmer:
 
     def rainbow_status(self) -> dict[str, bool]:
         return {r["name"]: r["unlocked"] for r in self.client.state["atlas"]["rainbow"]}
+
+    def left_to_collect(self) -> int | None:
+        """None while a rainbow item is missing (farm on); otherwise the blessing pieces still missing,
+        0 when there is nothing left that boss kills can drop."""
+        if not all(self.rainbow_status().values()):
+            return None
+        return heirlooms.missing_total(self.client.state.get("heirlooms"))
 
     def print_status(self) -> None:
         st = self.client.state
@@ -293,7 +305,10 @@ class Farmer:
             return
         sets, missing = found.get("sets") or {}, heirlooms.missing_by_set(found)
         names = ", ".join(f"{sets.get(k, {}).get('name', k)} ({missing.get(k, 0)} missing)" for k in self.focus)
-        self.log(f"pursuing {names}: {heirlooms.new_drop_chance(found, self.focus):.0%} of shining drops are new pieces")
+        chance = heirlooms.new_drop_chance(found, self.focus)
+        self.log(f"pursuing {names}: {chance:.0%} of shining drops are new pieces")
+        if not chance and any(missing.values()):
+            self.log("WARNING: both pursued sets are complete while other sets miss pieces; --focus auto pursues those")
 
     def start_run(self, loadout: dict[str, int]) -> None:
         if self.args.mode == "sim":
@@ -400,9 +415,10 @@ class Farmer:
         shining = heirlooms.new_pieces(t["heirlooms"], heirlooms.owned(found), found)
         for name in shining:
             self.log(f"*** SHINING DROP: {name} ***")
+        banked = _BANKED.search(t["summary"] or "")
         return {"floor": t["floor"], "bosses": t["bosses"], "rainbows": list(t["rainbows"]), "shining": shining,
                 "steps": t["steps"], "seconds": round(time.time() - t["t0"]), "outcome": t["outcome"],
-                "summary": t["summary"]}
+                "banked": int(banked.group(1).replace(",", "")) if banked else 0, "summary": t["summary"]}
 
     @staticmethod
     def _loot(result: dict) -> list[dict]:
@@ -418,7 +434,8 @@ class Farmer:
                "policy": self.args.policy, "map": self.args.map, "floor": summary["floor"],
                "bosses": summary["bosses"], "rainbows": "|".join(summary["rainbows"]),
                "shining": "|".join(summary.get("shining") or []), "steps": summary["steps"],
-               "seconds": summary["seconds"], "outcome": summary["outcome"], "summary": summary["summary"]}
+               "seconds": summary["seconds"], "outcome": summary["outcome"], "banked": summary.get("banked", 0),
+               "summary": summary["summary"]}
         header = list(row)
         if os.path.exists(path):  # keep an existing file's columns (older files lack "policy" and "shining")
             with open(path, newline="", encoding="utf-8") as fh:
@@ -447,9 +464,12 @@ class Farmer:
                 time.sleep(30)
             if not self.client.state.get("run"):
                 if self.args.mode == "real":
-                    if all(self.rainbow_status().values()):
-                        self.log("all rainbow items collected - stopping")
+                    left = self.left_to_collect()
+                    if left == 0:
+                        self.log("all rainbow items and blessing pieces collected - stopping")
                         break
+                    if left is not None and n == 1:
+                        self.log(f"all rainbow items collected; farming on for {left} missing blessing pieces")
                     if not self.ensure_ticket():
                         self.log("no tickets available - stopping")
                         break
@@ -515,6 +535,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--relic-loot-value", type=int, default=PolicyConfig.relic_loot_value,
                     help="loot (舔包) fallen players' bags worth at least this much gold instead of returning them "
                          "for the bounty; loot that valuable which the safe box cannot hold is banked by extracting")
+    ap.add_argument("--objective", choices=("bosses", "gold"), default="bosses",
+                    help="markov: what to maximise. bosses = formal boss kills; gold = banked loot plus "
+                         "--gold-per-boss per boss kill (extracts when banking the bag beats going on)")
+    ap.add_argument("--gold-per-boss", type=float, default=1_000_000,
+                    help="gold objective: what one boss kill is worth to you (shining / rainbow chances), in gold")
     ap.add_argument("--solve", choices=("background", "blocking"), default="background",
                     help="markov: solve value tables in a background thread and keep playing on the previous ones "
                          "(or the threshold rules) meanwhile; blocking = wait for every solve (reproducible)")
@@ -553,6 +578,10 @@ def main() -> None:
         sys.exit("--sell-now needs --mode real --i-understand-real")
     if args.mode == "real" and not args.i_understand_real and not args.status:
         sys.exit("Real mode spends tickets and gold. Re-run with --i-understand-real to confirm.")
+    if args.objective == "gold" and args.policy != "markov":
+        sys.exit("--objective gold needs --policy markov (the threshold rules only farm bosses)")
+    if args.gold_per_boss <= 0:
+        sys.exit("--gold-per-boss must be positive")
     Farmer(args).run()
 
 

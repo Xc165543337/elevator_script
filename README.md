@@ -65,7 +65,7 @@ as safe, so early floors pass without a stop at every elite (`--rush-elites off`
 | `markov_policy.py` | `MarkovPolicy`: `BossFarmPolicy` whose heal/fight/flee/rush/step decisions come from the solved tables (`--policy markov`). Tables are cached in `cache/`. |
 | `offline.py` | Plays complete runs offline against the game's own engine (from the bot repository), for policy comparisons. |
 | `trial.py` | The weekly fixed-seed trial 「来自群星的寓言集」: searches the deepest route in the local engine, then replays it live with a state check after every move. |
-| `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop when all rainbows are unlocked. |
+| `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop once all rainbows and blessing pieces are collected. |
 | `tests/` | Unit tests for the pure logic (`python -m pytest -q tests`). |
 | `docs/` | Game formulas, in-game guide dump, notes (`GAME_NOTES.md`). |
 
@@ -146,6 +146,30 @@ that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences wor
 - Elites under live rules are two segments: the first 8 rounds are valued with the best heals at the
   pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
   solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.
+
+### Gold objective (`--objective gold`)
+
+The default objective counts formal boss kills only, so the agent pushes on until a boss wall. With
+`--objective gold` the same solver maximises banked gold plus `--gold-per-boss` (default 1,000,000) per
+boss kill:
+
+- A run's loot is about a thousand items worth 2k-48k gold each, so the bag's value at a floor varies
+  little between runs. `mdp.LOOT_CURVES` holds it per map, measured in the game engine (mall: 0.75M at
+  F100, 6.1M at F500, 12.4M at F1000, 16M at F1500). Loot counts as it is found.
+- A death loses the bag; the 4-slot safe box keeps about 0.2M. Every fight's death probability is
+  charged with the bag at risk: in the solver the curve's value at that floor, in live fights the
+  actual bag.
+- Extracting is an action between floors, in a fight and during a boss window. The agent extracts when
+  no way on is worth more than banking the bag. It usually does so at a boss it cannot beat; it does not
+  stop early, because a loss of the bag is avoidable until a hopeless fight.
+- Tables for both objectives are cached separately (the objective is part of the cache key).
+- Offline, mall, 3 runs each (offline character): boss mode banked 5.5M per run (two deaths kept only the
+  safe box) with 87.3 bosses; gold mode banked 11.9M (two extractions at F1771-1773 with 16.7M and 18.9M,
+  one death) with 88.0 bosses.
+
+```bash
+python farm.py --mode real --policy markov --objective gold --i-understand-real
+```
 
 Offline comparison against the game engine (needs a checkout of `SlimeTROH/longniang-qqbot`):
 

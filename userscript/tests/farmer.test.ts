@@ -328,3 +328,41 @@ it('正式下潜按设置自动追寻缺件最多的两套', async () => {
     expect(server.starts[0]).toMatchObject({ focus: ['B03', 'B02'] })
     expect(logs.some(([m]) => m.includes('本局追寻') && m.includes('83%'))).toBe(true) // (1 + 2/3) / 2
 })
+
+describe('彩虹集齐后', () => {
+    const blessings = (owned: Record<string, number>) => ({
+        focus: ['B01', 'B02'],
+        needs_focus: false,
+        owned,
+        sets: { B01: { name: 'B01' }, B02: { name: 'B02' }, B03: { name: 'B03' } },
+        pieces: Object.fromEntries(
+            ['B01', 'B02', 'B03'].flatMap(k => [1, 2, 3, 4].map(j => [`${k}-${j}`, { name: `${k}-${j}`, set: k }]))
+        )
+    })
+    const complete = Object.fromEntries(['B01', 'B02', 'B03'].flatMap(k => [1, 2, 3, 4].map(j => [`${k}-${j}`, 1])))
+
+    it('闪耀祝福还缺部件时继续正式下潜，并追寻缺件的套', async () => {
+        const server = fakeServer()
+        server.state.player.tickets = 1
+        server.state.atlas.rainbow = [{ name: '虹彩之证', unlocked: true }]
+        const owned = { ...complete }
+        for (let j = 1; j <= 4; j++) delete owned[`B03-${j}`]
+        server.state.heirlooms = blessings(owned)
+        const { farmer, logs } = makeFarmer(server, { mode: 'real', runs: 1, restock: false, focus: 'auto' })
+        await farmer.run()
+        expect(server.commands[0]).toBe('start')
+        expect(server.starts[0].focus).toContain('B03')
+        expect(logs.some(([m]) => m.includes('继续刷还缺的 4 件闪耀祝福'))).toBe(true)
+    })
+
+    it('彩虹与闪耀祝福都集齐时停止', async () => {
+        const server = fakeServer()
+        server.state.player.tickets = 1
+        server.state.atlas.rainbow = [{ name: '虹彩之证', unlocked: true }]
+        server.state.heirlooms = blessings(complete)
+        const { farmer, logs } = makeFarmer(server, { mode: 'real', runs: 1, restock: false })
+        await farmer.run()
+        expect(server.commands).not.toContain('start')
+        expect(logs.some(([m]) => m.includes('彩虹物品与闪耀祝福已全部收集'))).toBe(true)
+    })
+})

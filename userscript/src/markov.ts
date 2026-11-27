@@ -159,6 +159,11 @@ export function smokeCount(run: Json): number {
     return ((run.bag || []) as Json[]).filter(it => it.id === 'smoke').reduce((s, it) => s + (it.quantity || 1), 0)
 }
 
+/** 现在死亡会损失的物资（百万金币）：背包（安全箱保住） */
+export function bagAtRisk(run: Json): number {
+    return ((run.bag || []) as Json[]).reduce((s, it) => s + Number(it.value || 0) * Number(it.quantity || 1), 0) / 1e6
+}
+
 export function effectiveHp(run: Json): number {
     return (run.hp + (run.shield || 0)) / run.max_hp
 }
@@ -423,6 +428,7 @@ export class MarkovPolicy extends BossFarmPolicy {
         const grid = t.grid
         const N = grid.length
         const S = this.mcfg.liveSamples
+        const cost = t.config.gold ? bagAtRisk(state.run) : 0 // 金币目标：死亡损失背包
         const count = (N - 1) * S
         const start = new Int32Array(count)
         const hp = new Float64Array(count)
@@ -448,7 +454,7 @@ export class MarkovPolicy extends BossFarmPolicy {
                 rng: this.rng
             })
             const next = bossSlice(t, g, Math.min(window + 1, BOSS_WINDOWS), li)
-            const winValue = 1 + interpValue(readyRow, 0, grid, 1.0)
+            const winValue = t.config.bossValue + interpValue(readyRow, 0, grid, 1.0)
             for (let k = 0; k < count; k++) {
                 after[k] =
                     res.ehp[k] <= 0
@@ -458,7 +464,7 @@ export class MarkovPolicy extends BossFarmPolicy {
         } else {
             const [first, rounds] = fightSegment(enemy)
             res = fight(build, hp, shield, enemy, { boss: false, ehp, startRound: first, rounds, rng: this.rng })
-            const pause = pausesAfterSegment(enemy) ? this.elitePause(state, t, li, build, enemy) : null
+            const pause = pausesAfterSegment(enemy) ? this.elitePause(state, t, li, build, enemy, cost) : null
             const eliteMax = Number(enemy.max_hp || enemy.hp)
             for (let k = 0; k < count; k++) {
                 const e1 = (res.hp[k] + res.shield[k]) / build.hp
@@ -474,11 +480,14 @@ export class MarkovPolicy extends BossFarmPolicy {
             if (res.hp[k] > 0) {
                 sums[start[k]] += after[k]
                 alive[start[k]] += 1
+            } else {
+                sums[start[k]] -= cost
             }
         }
         const value = new Float64Array(N)
         const death = new Float64Array(N)
         death[0] = 1
+        value[0] = -cost
         for (let i = 1; i < N; i++) {
             value[i] = sums[i] / S
             death[i] = 1 - alive[i] / S
@@ -538,7 +547,7 @@ export class MarkovPolicy extends BossFarmPolicy {
      * 即将到来的精英整备在价格 li 下的值 [生命][精英血量]：用实时库存回复后打完剩余回合。
      * 防护 / 蓄力次数按届时已用完处理（保守）。
      */
-    private elitePause(state: Json, t: ValueTables, li: number, build: Build, enemy: Foe): Float64Array {
+    private elitePause(state: Json, t: ValueTables, li: number, build: Build, enemy: Foe, deathCost = 0): Float64Array {
         const run = state.run
         const heal = new Closure(
             this.healOptions(run, true).map(o => o.item),
@@ -550,7 +559,13 @@ export class MarkovPolicy extends BossFarmPolicy {
         const foe = { ...enemy, hp: Number(enemy.max_hp || enemy.hp), rounds_fought: 0 }
         const later = { ...build, guardHits: 0, burstHits: 0 }
         const lands = elitePauseKernel(later, foe, t.grid, t.bossGrid, this.mcfg.pauseSamples, this.rng)
-        return elitePauseValue(lands, tableRow(t, t.ready, run.floor, li), 1, heal, t.bossGrid.length)
+        const nb = t.bossGrid.length
+        const pause = elitePauseValue(lands, tableRow(t, t.ready, run.floor, li), 1, heal, nb, deathCost)
+        if (t.config.gold) {
+            // 金币目标：在整备时撤离带回背包；已阵亡状态损失背包
+            for (let k = 0; k < pause.length; k++) pause[k] = k < nb ? -deathCost : Math.max(pause[k], 0)
+        }
+        return pause
     }
 
     // ------------------------------------------------------------------ 遭遇
@@ -636,7 +651,9 @@ export class MarkovPolicy extends BossFarmPolicy {
         const qSmoke = smoke ? interpValue(readyRow, 0, grid, e) - mu : -Infinity
         const healed = Math.max(e, ...heals.map(o => healApply(o.item, e, maxHp)))
         if (this.wishReady(state) && interpValue(deathCurve, 0, grid, healed) >= this.mcfg.wishMinDeath) {
-            const qWish = boss ? 1 + interpValue(readyRow, 0, grid, 1.0) : interpValue(readyRow, 0, grid, e)
+            const qWish = boss
+                ? t.config.bossValue + interpValue(readyRow, 0, grid, 1.0)
+                : interpValue(readyRow, 0, grid, e)
             const qOther = Math.max(qBase, qHeal, qPrep, qSmoke)
             if (qWish - qOther >= this.mcfg.wishGain * qWish) {
                 this.wishSent = true
@@ -646,6 +663,15 @@ export class MarkovPolicy extends BossFarmPolicy {
                     `${summary} → 为了我所期待的（${qWish.toFixed(2)} 对 ${qOther.toFixed(2)}）`
                 )
             }
+        }
+        const qAll = Math.max(qBase, qHeal, qPrep, qSmoke)
+        if (t.config.gold && ctr.has('extract') && qAll < this.mcfg.healMargin) {
+            // 金币目标：再打下去已不值什么，撤离带回背包
+            return decision(
+                'extract',
+                {},
+                `${summary} → 撤离：带回 ${bagAtRisk(run).toFixed(1)}M 胜过继续（${qAll.toFixed(2)}）`
+            )
         }
         const qBest = Math.max(qBase, qHeal, qPrep)
         if (smoke && qSmoke > qBest + this.mcfg.healMargin) {
@@ -792,6 +818,13 @@ export class MarkovPolicy extends BossFarmPolicy {
         }
         const curve = stepRow.map((v, i) => Math.max(v, rushRow[i], eliteRow ? eliteRow[i] : -Infinity))
         const [option, qHeal, qGo] = this.choose(e, lam, maxHp, curve, grid, this.healOptions(run, false))
+        if (t.config.gold && ctr.has('extract') && Math.max(qGo, qHeal) < this.mcfg.healMargin) {
+            return decision(
+                'extract',
+                {},
+                `${summary}：带回 ${bagAtRisk(run).toFixed(1)}M 胜过继续（${Math.max(qGo, qHeal).toFixed(2)}）→ 撤离`
+            )
+        }
         if (option && qHeal > qGo + this.mcfg.healMargin) {
             return decision(
                 option.decision.command,

@@ -63,6 +63,12 @@ export function missingBySet(heirlooms: Json): Map<string, number> {
     return out
 }
 
+/** 所有套还缺的部件总数（服务器没有祝福系统时为 0） */
+export function missingTotal(heirlooms: Json | null | undefined): number {
+    if (!heirlooms) return 0
+    return [...missingBySet(heirlooms).values()].reduce((a, b) => a + b, 0)
+}
+
 /**
  * 追寻这两套时，一次闪耀掉落是新部件的概率：两套等概率，套内缺的部件权重是已有的两倍
  * （游戏 heirlooms.roll），所以一套 4 件里缺 m 件时为 2m / (m + 4)

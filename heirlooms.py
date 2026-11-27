@@ -33,6 +33,11 @@ def missing_by_set(heirlooms: dict | None) -> dict[str, int]:
             for key in (heirlooms or {}).get("sets") or {}}
 
 
+def missing_total(heirlooms: dict | None) -> int:
+    """Blessing pieces not owned yet, over all sets (0 on a server without blessings)."""
+    return sum(missing_by_set(heirlooms).values())
+
+
 def new_drop_chance(heirlooms: dict | None, pair: list[str]) -> float:
     """P(a shining drop is a piece not owned yet) when pursuing `pair`: the drop picks one of the two sets
     with equal odds, and a missing piece weighs twice an owned one (game heirlooms.roll), so with m of a

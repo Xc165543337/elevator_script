@@ -10,7 +10,7 @@ import { battleEnemy, Calibration } from './combat.ts'
 import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
 import { int, pct } from './format.ts'
-import { missingBySet, newDropChance, resolveFocus } from './heirlooms.ts'
+import { missingBySet, missingTotal, newDropChance, resolveFocus } from './heirlooms.ts'
 import { floorMix, MIX_KINDS, parseFloorOdds } from './model.ts'
 import { DEFAULT_MARKOV, MarkovPolicy, Planner } from './markov.ts'
 import { AgentError, BossFarmPolicy } from './policy.ts'
@@ -172,9 +172,21 @@ export class Farmer {
             balanceGearScore: this.settings.balanceGearScore,
             rushElites: this.settings.rushElites
         }
-        if (this.settings.policy !== 'markov') return new BossFarmPolicy(this.cal, config)
-        const markov = { ...DEFAULT_MARKOV, mdp: { ...DEFAULT_MARKOV.mdp, rushElites: config.rushElites } }
-        if (sharedPlanner?.cfg.mdp.rushElites !== config.rushElites) sharedPlanner = new Planner(markov, slicedSolver())
+        if (this.settings.policy !== 'markov') {
+            if (this.settings.objective === 'gold') this.log('金币目标只适用于马尔可夫决策；阈值规则按首领数刷', 'warn')
+            return new BossFarmPolicy(this.cal, config)
+        }
+        const gold = this.settings.objective === 'gold'
+        const mdp = {
+            ...DEFAULT_MARKOV.mdp,
+            rushElites: config.rushElites,
+            gold,
+            bossValue: gold ? this.settings.goldPerBoss / 1e6 : 1
+        }
+        const markov = { ...DEFAULT_MARKOV, mdp }
+        const same = (a: typeof mdp) =>
+            a.rushElites === mdp.rushElites && a.gold === mdp.gold && a.bossValue === mdp.bossValue
+        if (!sharedPlanner || !same(sharedPlanner.cfg.mdp)) sharedPlanner = new Planner(markov, slicedSolver())
         sharedPlanner.log = msg => this.log(msg)
         return new MarkovPolicy(this.cal, config, markov, sharedPlanner)
     }
@@ -489,7 +501,11 @@ export class Farmer {
         if (!h || !this.focus) return
         const missing = missingBySet(h)
         const names = this.focus.map(k => `${h.sets?.[k]?.name ?? k}（缺 ${missing.get(k) ?? 0} 件）`).join('、')
-        this.log(`本局追寻 ${names}：闪耀掉落是新部件的概率 ${pct(newDropChance(h, this.focus))}`)
+        const chance = newDropChance(h, this.focus)
+        this.log(`本局追寻 ${names}：闪耀掉落是新部件的概率 ${pct(chance)}`)
+        if (!chance && [...missing.values()].some(m => m > 0)) {
+            this.log('追寻的两套都已集齐，而其他套还缺部件：设置「追寻祝福」选「自动」即可追寻那些套', 'warn')
+        }
     }
 
     /** 进行中的正式局仍缺追寻选择时（本局补选追寻）补发 */
@@ -704,8 +720,12 @@ export class Farmer {
                     if (s.mode === 'real') {
                         const rainbows = this.rainbowStatus()
                         if (rainbows.length && rainbows.every(([, unlocked]) => unlocked)) {
-                            this.log('彩虹物品已全部收集，停止', 'good')
-                            break
+                            const missing = missingTotal(this.client.state.heirlooms)
+                            if (!missing) {
+                                this.log('彩虹物品与闪耀祝福已全部收集，停止', 'good')
+                                break
+                            }
+                            if (n === 1) this.log(`彩虹物品已全部收集；继续刷还缺的 ${missing} 件闪耀祝福`)
                         }
                         if (!(await this.ensureTicket())) {
                             this.log('没有可用门票，停止', 'warn')
