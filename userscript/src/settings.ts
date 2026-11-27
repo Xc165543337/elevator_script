@@ -35,6 +35,9 @@ export interface Settings {
     mode: 'sim' | 'real'
     /** threshold = 手调规则（policy.ts）；markov = 求解的马尔可夫决策过程（markov.ts，后台求解约 5 分钟） */
     policy: 'threshold' | 'markov'
+    /** 马尔可夫的目标：bosses = 正式首领数；gold = 带回的物资 + 每个首领 goldPerBoss 金币（划算时撤离） */
+    objective: 'bosses' | 'gold'
+    goldPerBoss: number
     map: string
     /** 正式下潜追寻的两套祝福：'' = 沿用游戏内上次的选择，'auto' = 缺件最多的两套，'B03,B08' = 指定 */
     focus: string
@@ -59,6 +62,8 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
     mode: 'sim',
     policy: 'threshold',
+    objective: 'bosses',
+    goldPerBoss: 1_000_000,
     map: 'mall',
     focus: '',
     runs: 1,
@@ -97,6 +102,10 @@ export function normalizeSettings(saved: unknown): Settings {
             if (value === 'sim' || value === 'real') out.mode = value
         } else if (key === 'policy') {
             if (value === 'threshold' || value === 'markov') out.policy = value
+        } else if (key === 'objective') {
+            if (value === 'bosses' || value === 'gold') out.objective = value
+        } else if (key === 'goldPerBoss') {
+            if (typeof value === 'number' && Number.isFinite(value) && value > 0) out.goldPerBoss = value
         } else if (key === 'focus') {
             if (typeof value === 'string' && validFocus(value)) out.focus = value
         } else if (key === 'map') {

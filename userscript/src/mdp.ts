@@ -34,8 +34,122 @@ export const E_MAX = 1.25 // 满血加屏障灌注剂 25% 护盾
 export const BOSS_WINDOWS = 4 // 窗口 1-3 不同（首回合加成、越战越勇递增）；4 及以后相同
 export const RUSH_FLOORS = 10
 export const RUSH_STOP_HP = 0.5 // 服务器在 HP ≤ 50% 时停止连战
+
+/**
+ * 金币目标：本局物资（背包 + 安全箱，百万金币）随楼层的期望值，在游戏引擎中用阈值策略实测（每图 3 局，正式局）。
+ * 一局背包约千件、每件 2k–48k 金币，某层的总值在各局之间相差不大，所以用一条曲线代替；最后一点之后沿最后一段的斜率延伸
+ * （同 Python 版 LOOT_CURVES）
+ */
+export const LOOT_CURVES: Record<string, [number, number][]> = {
+    mall: [
+        [0, 0],
+        [50, 0.49],
+        [100, 0.75],
+        [200, 1.71],
+        [300, 3.44],
+        [500, 6.11],
+        [800, 10.14],
+        [1000, 12.42],
+        [1200, 14.08],
+        [1500, 15.99]
+    ],
+    subway: [
+        [0, 0],
+        [50, 0.66],
+        [100, 1.41],
+        [200, 2.93],
+        [300, 4.39],
+        [500, 7.4],
+        [800, 10.12]
+    ],
+    abyss: [
+        [0, 0],
+        [50, 1.02],
+        [100, 2.12],
+        [200, 4.27],
+        [300, 6.22],
+        [500, 8.47]
+    ],
+    auction: [
+        [0, 0],
+        [25, 0.68],
+        [50, 1.23],
+        [100, 2.39],
+        [150, 3.78],
+        [200, 4.77],
+        [300, 6.22],
+        [400, 7.32],
+        [500, 8.14],
+        [600, 8.78]
+    ],
+    tide: [
+        [0, 0],
+        [25, 0.58],
+        [50, 1.16],
+        [100, 2.14],
+        [150, 3.1],
+        [200, 3.82],
+        [300, 4.94],
+        [400, 5.71]
+    ],
+    zenith: [
+        [0, 0],
+        [25, 0.6],
+        [50, 1.18],
+        [100, 2.2],
+        [150, 3.11],
+        [200, 4.14]
+    ]
+}
+/** 死亡时 4 格安全箱保住的物资（百万金币，实测） */
+export const SAFE_KEPT = 0.2
+
+/** 某层的本局期望物资（百万金币）；未实测的地图用商场曲线 */
+export function lootAt(mapId: string, floor: number): number {
+    const points = LOOT_CURVES[mapId] ?? LOOT_CURVES.mall
+    const [lastX, lastY] = points[points.length - 1]
+    if (floor <= lastX) {
+        for (let i = 1; i < points.length; i++) {
+            const [x0, y0] = points[i - 1]
+            const [x1, y1] = points[i]
+            if (floor <= x1) return y0 + ((y1 - y0) * (floor - x0)) / (x1 - x0)
+        }
+    }
+    const [prevX, prevY] = points[points.length - 2]
+    return lastY + Math.max(0, (lastY - prevY) / (lastX - prevX)) * (floor - lastX)
+}
+
+/** 每层（0..top+2）的 [进层找到的物资, 在该层死亡损失的物资]，模型单位；非金币目标时全为 0 */
+export function lootProfile(config: MdpConfig, mapId: string, top: number): [Float64Array, Float64Array] {
+    const gain = new Float64Array(top + 3)
+    const risk = new Float64Array(top + 3)
+    if (!config.gold) return [gain, risk]
+    let prev = 0
+    for (let g = 0; g < top + 3; g++) {
+        const loot = lootAt(mapId, g)
+        gain[g] = loot - prev
+        risk[g] = Math.max(loot - SAFE_KEPT, 0)
+        prev = loot
+    }
+    return [gain, risk]
+}
+
+/** 按存活部分（kill / draw / cont / lands 的行）拆开的转移核，每个出发状态的死亡概率 */
+export function deathOf(rows: number, ...parts: Float64Array[]): Float64Array {
+    const out = new Float64Array(rows).fill(1)
+    for (const part of parts) {
+        const cols = part.length / rows
+        for (let r = 0; r < rows; r++) {
+            let sum = 0
+            for (let c = 0; c < cols; c++) sum += part[r * cols + c]
+            out[r] -= sum
+        }
+    }
+    for (let r = 0; r < rows; r++) out[r] = Math.min(1, Math.max(0, out[r]))
+    return out
+}
 const FIELD_DROP_CHANCE = 0.52 // 服务器 FIELD_CHANCE；F1、首领层及其前一层必掉
-export const MODEL_VERSION = 7
+export const MODEL_VERSION = 8
 
 // ---------------------------------------------------------------------------- 回复道具
 /** 提高有效生命的消耗品（数值来自服务器道具规格） */
@@ -247,6 +361,12 @@ export interface MdpConfig {
      * （game.py rush）。求解时间约多 40%
      */
     rushElites: boolean
+    /**
+     * 目标。首领（默认）：每击败一个正式首领 +bossValue。金币：单位为百万金币，一个首领值 bossValue，找到的物资即计入
+     * （lootProfile），死亡损失安全箱以外的背包；撤离（层间、战斗中、首领战中）把它带回
+     */
+    gold: boolean
+    bossValue: number
     seed: number
 }
 
@@ -262,6 +382,8 @@ export const DEFAULT_MDP: MdpConfig = {
     smokePrices: [0.0, 0.03, 0.05, 0.07, 0.1, 1000.0],
     pauseSamples: 96,
     rushElites: true,
+    gold: false,
+    bossValue: 1,
     seed: 0
 }
 
@@ -547,11 +669,17 @@ export function elitePauseValue(
     ready: Float64Array,
     L: number,
     heal: Closure,
-    nb: number
+    nb: number,
+    deathCost = 0
 ): Float64Array {
     const n = heal.size
     const s = (lands.length / n) | 0
-    return heal.apply(mulBT(ready, L, n, lands, s), L, n, nb)
+    const values = mulBT(ready, L, n, lands, s)
+    if (deathCost) {
+        const death = deathOf(s, lands)
+        for (let l = 0; l < L; l++) for (let r = 0; r < s; r++) values[l * s + r] -= deathCost * death[r]
+    }
+    return heal.apply(values, L, n, nb)
 }
 
 export function fleeChance(build: Build, floor: number): number {
@@ -726,9 +854,29 @@ export function* solveSteps(
         }
         return k
     }
+    const [gain, risk] = lootProfile(config, mapId, top)
+    const gold = config.gold
     const income = (floor: number) => {
         const units = fieldHealIncome(floor, maxHp)
-        return (l: number) => lambdas[l] * units
+        return (l: number) => lambdas[l] * units + gain[floor]
+    }
+    /** 转移核的死亡概率（每个出发生命格点），按转移核缓存 */
+    const deaths = new WeakMap<Float64Array, Float64Array>()
+    const deathFrom = (...parts: Float64Array[]): Float64Array => {
+        let d = deaths.get(parts[0])
+        if (!d) {
+            d = deathOf(N, ...parts)
+            deaths.set(parts[0], d)
+        }
+        return d
+    }
+    /** 金币目标：撤离（再值 0，带回背包）与已阵亡状态（损失背包） */
+    const bank = (values: Float64Array, h: number): Float64Array => {
+        if (!gold) return values
+        for (let l = 0; l < L; l++) {
+            for (let i = 0; i < N; i++) values[l * N + i] = i === 0 ? -risk[h] : Math.max(values[l * N + i], 0)
+        }
+        return values
     }
     /** 连战中进入 h 层的值；after = 本层处理完后的延续。autoElite：HP 高于 50% 时连战自己打精英到整备，击杀则继续 */
     const enter = (h: number, after: Float64Array, stopLow: boolean, autoElite = false): Float64Array => {
@@ -744,18 +892,21 @@ export function* solveSteps(
         const readyH = row(ready, h)
         const fought = mulBT(after, L, N, kill, N)
         const drawn = mulBT(readyH, L, N, draw, N)
+        const dNormal = gold ? deathFrom(kill, draw) : null
         const eN = row(encNormal, h)
         const eE = row(encElite, h)
         let auto: Float64Array | null = null
         if (autoElite) {
-            auto = mulBT(after, L, N, eliteKernel(h).kill, N)
+            const first = eliteKernel(h)
+            auto = mulBT(after, L, N, first.kill, N)
             const reached = pauseReached.get(h)!
-            for (let k = 0; k < LN; k++) auto[k] += reached[k]
+            const dFirst = gold ? deathFrom(first.cont, first.kill) : null
+            for (let k = 0; k < LN; k++) auto[k] += reached[k] - (dFirst ? risk[h] * dFirst[k % N] : 0)
         }
         for (let l = 0; l < L; l++) {
             for (let i = 0; i < N; i++) {
                 const k = l * N + i
-                const f = fought[k] + drawn[k] // 平局让连战停在该层
+                const f = fought[k] + drawn[k] - (dNormal ? risk[h] * dNormal[i] : 0) // 平局让连战停在该层
                 const normal = stopLow && low[i] ? eN[k] : f
                 const elite = auto && !low[i] ? auto[k] : eE[k]
                 out[k] = inc(l) + mix.normal * normal + mix.elite * elite + mix.choice * readyH[k] + mix.loot * after[k]
@@ -775,7 +926,7 @@ export function* solveSteps(
         step.set(arrive.subarray((g + 1) * LN, (g + 2) * LN), off)
         const best = new Float64Array(LN)
         for (let k = 0; k < LN; k++) best[k] = Math.max(step[off + k], rush[off + k], rushElite[off + k])
-        ready.set(calmHeal.apply(best, L, N), off)
+        ready.set(bank(calmHeal.apply(best, L, N), g), off)
         const readyG = row(ready, g)
         // 3. g 层的遭遇
         for (const kind of ['normal', 'elite'] as const) {
@@ -783,16 +934,25 @@ export function* solveSteps(
             let fightValue: Float64Array
             if (kind === 'elite') {
                 const { cont, kill, lands } = eliteKernel(g)
-                const pause = elitePauseValue(lands, readyG, L, anyHeal, NB)
+                const pause = elitePauseValue(lands, readyG, L, anyHeal, NB, risk[g])
+                if (gold) {
+                    // 在整备时撤离；已阵亡状态损失背包
+                    for (let k = 0; k < pause.length; k++) {
+                        pause[k] = Math.floor(k / NB) % N === 0 ? -risk[g] : Math.max(pause[k], 0)
+                    }
+                }
                 fightValue = mulBT(readyG, L, N, kill, N)
                 const reached = mulBT(pause, L, N * NB, cont, N)
                 pauseReached.set(g, reached)
-                for (let k = 0; k < LN; k++) fightValue[k] += reached[k]
+                const dFirst = gold ? deathFrom(cont, kill) : null
+                for (let k = 0; k < LN; k++) fightValue[k] += reached[k] - (dFirst ? risk[g] * dFirst[k % N] : 0)
             } else {
                 const { kill, draw } = kernel(kind, g)
                 const both = new Float64Array(kill.length)
                 for (let k = 0; k < both.length; k++) both[k] = kill[k] + draw[k]
                 fightValue = mulBT(readyG, L, N, both, N)
+                const d = gold ? deathFrom(kill, draw) : null
+                if (d) for (let k = 0; k < LN; k++) fightValue[k] -= risk[g] * d[k % N]
             }
             const failAt = interp(
                 Array.from(grid, e => Math.max(e - fleeHit(build, foe), 0)),
@@ -811,16 +971,16 @@ export function* solveSteps(
                     const smoke = readyG[k] - smokePrices[l] // 烟雾弹：无伤脱身，留在本层
                     value[k] = Math.max(fightValue[k], flee, smoke)
                 }
-                value[l * N] = Math.max(fightValue[l * N], 0)
+                value[l * N] = Math.max(fightValue[l * N], -risk[g])
             }
-            ;(kind === 'normal' ? encNormal : encElite).set(anyHeal.apply(value, L, N), off)
+            ;(kind === 'normal' ? encNormal : encElite).set(bank(anyHeal.apply(value, L, N), g), off)
         }
         // 4. g 层的首领
         if (isBossFloor(g)) {
             const win = new Float64Array(L)
             for (let l = 0; l < L; l++) {
                 const k = l * N + full.lo[0]
-                win[l] = 1.0 + (1 - full.w[0]) * readyG[k] + full.w[0] * readyG[k + 1]
+                win[l] = config.bossValue + (1 - full.w[0]) * readyG[k] + full.w[0] * readyG[k + 1]
             }
             const table = yield* solveBoss(
                 build,
@@ -831,7 +991,8 @@ export function* solveSteps(
                 win,
                 anyHeal,
                 config,
-                rng
+                rng,
+                risk[g]
             )
             boss.set(g, table)
             const bs = new Float64Array(LN)
@@ -856,6 +1017,7 @@ export function* solveSteps(
                 }
             }
         }
+        if (gold) for (let l = 0; l < L; l++) arrive[off + l * N] = -risk[g]
         // 6. 连战中途进入 g+1 层（需要 ready[g] 做下潜前的 HP 检查）
         if (g + 1 <= top) {
             const midLayers = (layers: Map<number, Float64Array[]>, autoElite: boolean) => {
@@ -901,7 +1063,10 @@ export function* solveSteps(
     }
 }
 
-/** 每个窗口前的值 [窗口][价格][生命][首领血量]；击杀价值为 1 + 满血 ready。每个转移核与每次迭代后让出 */
+/**
+ * 每个窗口前的值 [窗口][价格][生命][首领血量]；击杀价值为 bossValue + 满血 ready。每个转移核与每次迭代后让出。
+ * 金币目标：死亡损失 deathCost，首领战中撤离再值 0
+ */
 function* solveBoss(
     build: Build,
     foe: Foe,
@@ -911,13 +1076,14 @@ function* solveBoss(
     winValue: Float64Array,
     heal: Closure,
     config: MdpConfig,
-    rng: Rng
+    rng: Rng,
+    deathCost = 0
 ): Generator<void, Float32Array, void> {
     const N = grid.length
     const NB = bossGrid.length
     const L = lambdas.length
     const S = N * NB
-    const kernels: { cont: Csr; win: Float64Array }[] = []
+    const kernels: { cont: Csr; win: Float64Array; death: Float64Array }[] = []
     for (let w = 0; w < BOSS_WINDOWS; w++) {
         const { cont, kill } = segmentKernel(build, foe, {
             boss: true,
@@ -930,14 +1096,22 @@ function* solveBoss(
         })
         const win = new Float64Array(S)
         for (let s = 0; s < S; s++) for (let j = 0; j < N; j++) win[s] += kill[s * N + j]
-        kernels.push({ cont: toCsr(cont, S, S), win }) // 每行只落到少数状态：稀疏乘法快数倍
+        const death = deathOf(S, cont, kill) // 金币目标的死亡概率（每个出发状态）
+        kernels.push({ cont: toCsr(cont, S, S), win, death }) // 每行只落到少数状态：稀疏乘法快数倍
         yield
     }
     const windowValue = (w: number, next: Float64Array): Float64Array => {
-        const { cont, win } = kernels[w]
+        const { cont, win, death } = kernels[w]
         const v = mulBTSparse(next, L, S, cont)
-        for (let l = 0; l < L; l++) for (let s = 0; s < S; s++) v[l * S + s] += winValue[l] * win[s]
-        return heal.apply(v, L, N, NB)
+        for (let l = 0; l < L; l++) {
+            for (let s = 0; s < S; s++) v[l * S + s] += winValue[l] * win[s] - (config.gold ? deathCost * death[s] : 0)
+        }
+        const out = heal.apply(v, L, N, NB)
+        if (config.gold) {
+            for (let k = 0; k < out.length; k++)
+                out[k] = Math.floor(k / NB) % N === 0 ? -deathCost : Math.max(out[k], 0)
+        }
+        return out
     }
     const values = new Float32Array(BOSS_WINDOWS * L * S)
     let last: Float64Array = new Float64Array(L * S)

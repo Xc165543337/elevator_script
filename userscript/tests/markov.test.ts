@@ -5,13 +5,24 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { Calibration } from '../src/combat.ts'
 import { applyPrep, liveBuild, SPECS } from '../src/field.ts'
-import { bucket, closeBuilds, DEFAULT_MARKOV, healStock, isotonic, MarkovPolicy, Planner } from '../src/markov.ts'
+import {
+    bagAtRisk,
+    bucket,
+    closeBuilds,
+    DEFAULT_MARKOV,
+    healStock,
+    isotonic,
+    MarkovPolicy,
+    Planner
+} from '../src/markov.ts'
 import type { MarkovConfig } from '../src/markov.ts'
 import {
     DEFAULT_MDP,
     elitePauseKernel,
     healApply,
     healUnits,
+    LOOT_CURVES,
+    lootAt,
     priceIndex,
     regularKernel,
     SHOP_HEALS,
@@ -553,5 +564,76 @@ describe('价值表网格', () => {
         expect(bucket(near, 0.05)).toEqual(a)
         expect(bucket(a, 0.05)).toEqual(a)
         expect(bucket(BUILD, 0)).toEqual(BUILD)
+    })
+})
+
+// ------------------------------------------------------------------ 金币目标
+describe('金币目标', () => {
+    const WEAK = { ...BUILD, hp: 400, defense: 5, atk: 90, leech: 0, vampire: 0 } // 约 F70 起打不过
+    let gold: ValueTables
+    beforeAll(() => {
+        gold = solve(WEAK, 'mall', { ...SMALL, gold: true, bossValue: 0.2 })
+    }, 120_000)
+
+    it('物资曲线：插值，最后一点之后沿最后一段斜率延伸；未实测地图用商场曲线', () => {
+        expect(lootAt('mall', 0)).toBe(0)
+        expect(lootAt('mall', 100)).toBeCloseTo(0.75, 9)
+        expect(lootAt('mall', 150)).toBeCloseTo((0.75 + 1.71) / 2, 9)
+        const pts = LOOT_CURVES.mall
+        const [[x1, y1], [x2, y2]] = pts.slice(-2)
+        expect(lootAt('mall', x2 + 100)).toBeCloseTo(y2 + (100 * (y2 - y1)) / (x2 - x1), 9)
+        expect(lootAt('unknown', 300)).toBe(lootAt('mall', 300))
+        expect(lootAt('zenith', 100)).toBeGreaterThan(lootAt('mall', 100))
+    })
+
+    it('从不低于撤离，越深的首领越常撤离', () => {
+        const L = gold.lambdas.length
+        const N = gold.grid.length
+        for (let g = 1; g < SMALL.maxFloor; g++) {
+            for (let l = 0; l < L; l++) {
+                for (let i = 1; i < N; i++) expect(gold.ready[(g * L + l) * N + i]).toBeGreaterThanOrEqual(-1e-5)
+            }
+        }
+        const NB = gold.bossGrid.length
+        const costly = L - 1
+        const zeros = [30, 90, 150, 190].map(f => {
+            const tbl = gold.boss.get(f)!.subarray(costly * N * NB, (costly + 1) * N * NB) // 第 1 窗口
+            let n = 0
+            for (let k = NB; k < tbl.length; k++) if (tbl[k] <= 1e-6) n++
+            return n
+        })
+        expect(zeros[0]).toBe(0)
+        expect([...zeros].sort((a, b) => a - b)).toEqual(zeros)
+        expect(zeros[3]).toBeGreaterThan(50)
+    })
+
+    it('物资计入价值，首领目标不变', () => {
+        const withGold = solve(BUILD, 'mall', { ...SMALL, gold: true })
+        const L = tables.lambdas.length
+        const N = tables.grid.length
+        const full = N - 6 // 生命 1.0（26 个格点到 1.25）
+        expect(withGold.ready[L * N + full] - tables.ready[L * N + full]).toBeCloseTo(lootAt('mall', 201), 1)
+    })
+
+    it('撤离而不是硬打打不过的首领', () => {
+        const policy = makePolicy({ extractBelow: 0, mdp: { ...SMALL, gold: true, bossValue: 0.2 } })
+        policy.affixBuild = WEAK
+        policy.planner.set(gold)
+        const s = makeState({
+            floor: 190,
+            hp: 400,
+            foe: foeOf('boss', 190),
+            bag: [{ id: 'r05', index: 9, name: '红', value: 48_000, quantity: 30 }],
+            controls: ['fight', 'extract']
+        })
+        s.run.max_hp = 400
+        s.run.effective_stats = { hp: 400, atk: 90, def: 5, agi: WEAK.agi, luk: WEAK.luk }
+        const d = policy.decide(s)
+        expect(d.command).toBe('extract')
+    })
+
+    it('背包才计入死亡损失', () => {
+        const run = { bag: [{ value: 48_000, quantity: 10 }, { value: 2_000 }], safe: [{ value: 48_000 }] }
+        expect(bagAtRisk(run)).toBeCloseTo(0.482, 9)
     })
 })

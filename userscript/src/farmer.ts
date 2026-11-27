@@ -172,9 +172,21 @@ export class Farmer {
             balanceGearScore: this.settings.balanceGearScore,
             rushElites: this.settings.rushElites
         }
-        if (this.settings.policy !== 'markov') return new BossFarmPolicy(this.cal, config)
-        const markov = { ...DEFAULT_MARKOV, mdp: { ...DEFAULT_MARKOV.mdp, rushElites: config.rushElites } }
-        if (sharedPlanner?.cfg.mdp.rushElites !== config.rushElites) sharedPlanner = new Planner(markov, slicedSolver())
+        if (this.settings.policy !== 'markov') {
+            if (this.settings.objective === 'gold') this.log('金币目标只适用于马尔可夫决策；阈值规则按首领数刷', 'warn')
+            return new BossFarmPolicy(this.cal, config)
+        }
+        const gold = this.settings.objective === 'gold'
+        const mdp = {
+            ...DEFAULT_MARKOV.mdp,
+            rushElites: config.rushElites,
+            gold,
+            bossValue: gold ? this.settings.goldPerBoss / 1e6 : 1
+        }
+        const markov = { ...DEFAULT_MARKOV, mdp }
+        const same = (a: typeof mdp) =>
+            a.rushElites === mdp.rushElites && a.gold === mdp.gold && a.bossValue === mdp.bossValue
+        if (!sharedPlanner || !same(sharedPlanner.cfg.mdp)) sharedPlanner = new Planner(markov, slicedSolver())
         sharedPlanner.log = msg => this.log(msg)
         return new MarkovPolicy(this.cal, config, markov, sharedPlanner)
     }
