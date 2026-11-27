@@ -94,8 +94,8 @@ class Farmer:
                               relic_loot_value=args.relic_loot_value, rush_elites=args.rush_elites == "on",
                               rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
         if args.policy == "markov":
-            self.policy = MarkovPolicy(self.cal, config, MarkovConfig(cache_dir=os.path.join(HERE, "cache")),
-                                       log=self.log)
+            markov = MarkovConfig(cache_dir=os.path.join(HERE, "cache"), background=args.solve == "background")
+            self.policy = MarkovPolicy(self.cal, config, markov, log=self.log)
         else:
             self.policy = BossFarmPolicy(self.cal, config)
         self.focus: list[str] | None = None   # blessing sets pursued by the current real run
@@ -287,6 +287,14 @@ class Farmer:
         """Blessing sets to pursue on a real run (None: the server has no blessings). Raises FocusError."""
         return heirlooms.resolve_focus(self.client.state.get("heirlooms"), self.args.focus)
 
+    def log_pursuit(self) -> None:
+        found = self.client.state.get("heirlooms")
+        if not self.focus or not found:
+            return
+        sets, missing = found.get("sets") or {}, heirlooms.missing_by_set(found)
+        names = ", ".join(f"{sets.get(k, {}).get('name', k)} ({missing.get(k, 0)} missing)" for k in self.focus)
+        self.log(f"pursuing {names}: {heirlooms.new_drop_chance(found, self.focus):.0%} of shining drops are new pieces")
+
     def start_run(self, loadout: dict[str, int]) -> None:
         if self.args.mode == "sim":
             self.call("simulate", {"map_id": self.args.map})
@@ -450,6 +458,7 @@ class Farmer:
                     except heirlooms.FocusError as err:
                         self.log(f"cannot start a real run: {err}")
                         break
+                    self.log_pursuit()
                     if self.args.restock:
                         self.restock(loadout)
                 self.ensure_rush_settings()
@@ -501,10 +510,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--focus", default=None,
                     help="real runs: the two blessing sets to pursue (追寻), by number or id, e.g. 1,8; "
+                         "auto = the two sets with most pieces missing (most new pieces per shining drop); "
                          "default: the pair chosen last time")
     ap.add_argument("--relic-loot-value", type=int, default=PolicyConfig.relic_loot_value,
                     help="loot (舔包) fallen players' bags worth at least this much gold instead of returning them "
                          "for the bounty; loot that valuable which the safe box cannot hold is banked by extracting")
+    ap.add_argument("--solve", choices=("background", "blocking"), default="background",
+                    help="markov: solve value tables in a background thread and keep playing on the previous ones "
+                         "(or the threshold rules) meanwhile; blocking = wait for every solve (reproducible)")
     ap.add_argument("--rush-elites", choices=("on", "off"), default="on",
                     help="let rushes fight elites by themselves (自动打精英) where the policy finds it as safe: "
                          "fewer stops per run; off = every rush stops at elites")

@@ -118,7 +118,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
     farm_args = build_parser().parse_args([
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
         "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", args.rules,
-        "--rush-elites", args.rush_elites, "--focus", args.focus,
+        "--rush-elites", args.rush_elites, "--focus", args.focus, "--solve", "blocking",
         *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))

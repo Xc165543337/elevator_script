@@ -5,7 +5,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { Calibration } from '../src/combat.ts'
 import { applyPrep, liveBuild, SPECS } from '../src/field.ts'
-import { closeBuilds, DEFAULT_MARKOV, healStock, isotonic, MarkovPolicy, Planner } from '../src/markov.ts'
+import { bucket, closeBuilds, DEFAULT_MARKOV, healStock, isotonic, MarkovPolicy, Planner } from '../src/markov.ts'
 import type { MarkovConfig } from '../src/markov.ts'
 import {
     DEFAULT_MDP,
@@ -538,5 +538,20 @@ describe('连战自动打精英', () => {
     it('关闭选项后求解与决策都不含此项', () => {
         const policy = new MarkovPolicy(CAL, { rushElites: false })
         expect(policy.mcfg.mdp.rushElites).toBe(false)
+    })
+})
+
+describe('价值表网格', () => {
+    it('保守吸附、相近 Build 共用、幂等', () => {
+        const a = bucket(BUILD, 0.05)
+        expect(a.atk).toBeLessThanOrEqual(BUILD.atk)
+        expect(a.hp).toBeLessThanOrEqual(BUILD.hp)
+        expect(a.takenMult).toBeGreaterThanOrEqual(BUILD.takenMult)
+        expect(a.atk).toBeGreaterThan(BUILD.atk / 1.05)
+        expect(Number.isInteger(a.hp) && Number.isInteger(a.atk)).toBe(true)
+        const near = { ...a, atk: a.atk * 1.03, hp: a.hp + 3, takenMult: a.takenMult * 0.98 }
+        expect(bucket(near, 0.05)).toEqual(a)
+        expect(bucket(a, 0.05)).toEqual(a)
+        expect(bucket(BUILD, 0)).toEqual(BUILD)
     })
 })

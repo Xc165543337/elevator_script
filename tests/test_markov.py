@@ -34,7 +34,7 @@ def legacy_tables():
 
 def make_policy(tables, cache_dir, rules=LIVE_RULES):
     p = MarkovPolicy(CAL, PolicyConfig(rules=rules),
-                     MarkovConfig(cache_dir=str(cache_dir), live_samples=150, mdp=tables.config))
+                     MarkovConfig(cache_dir=str(cache_dir), live_samples=150, mdp=tables.config, background=False))
     p._affix_build, p._loadout = BUILD, ()
     p.planner._tables = tables
     p._rng = np.random.default_rng(7)
@@ -408,3 +408,44 @@ def test_rushes_through_elites_within_the_tolerance(tables, tmp_path, loss, auto
 def test_rush_elites_option_reaches_the_solver(tmp_path):
     p = MarkovPolicy(CAL, PolicyConfig(rush_elites=False), MarkovConfig(cache_dir=str(tmp_path)))
     assert not p.mcfg.mdp.rush_elites
+
+
+# ------------------------------------------------------------------ table cache and background solves
+TINY = MdpConfig(max_floor=40, hp_points=11, boss_points=4, samples=16, kernel_stride=10, lambdas=(0.0, 1.0),
+                 smoke_prices=(0.0, 1000.0), pause_samples=8, boss_iterations=5)
+
+
+def test_bucket_is_conservative_and_shared_by_nearby_builds():
+    from markov_policy import bucket
+    a = bucket(BUILD, 0.05)
+    assert a.atk <= BUILD.atk and a.hp <= BUILD.hp and a.taken_mult >= BUILD.taken_mult
+    assert a.atk > BUILD.atk / 1.05 and a.leech <= BUILD.leech
+    near = replace(a, atk=a.atk * 1.03, hp=a.hp + 3, taken_mult=a.taken_mult * 0.98)
+    assert bucket(near, 0.05) == a                          # within one grid step: one cached solve
+    assert bucket(a, 0.05) == a                             # idempotent
+    assert bucket(BUILD, 0.0) == BUILD
+
+
+def test_background_solve_keeps_playing_on_old_tables(tmp_path):
+    from markov_policy import Planner
+    cfg = MarkovConfig(cache_dir=str(tmp_path), mdp=TINY, background=True)
+    planner = Planner(cfg)
+    assert planner.tables(BUILD, "mall") is None            # nothing yet: the policy uses its threshold rules
+    planner.wait()
+    first = planner.tables(BUILD, "mall")
+    assert first is not None and first.config == TINY
+    stronger = replace(BUILD, atk=BUILD.atk * 1.5)
+    assert planner.tables(stronger, "mall") is first        # old tables while the new ones solve
+    planner.wait()
+    assert planner.tables(stronger, "mall") is not first
+    assert planner.tables(stronger, "subway") is None       # never another map's tables
+
+
+def test_cache_keeps_the_most_recently_used_solves(tmp_path):
+    from markov_policy import Planner
+    planner = Planner(MarkovConfig(cache_dir=str(tmp_path), mdp=TINY, background=False, cache_max_files=2))
+    for k in range(3):
+        planner.tables(replace(BUILD, atk=BUILD.atk * (1.3 ** k)), "mall")
+    assert len(list(tmp_path.glob("mdp_*.npz"))) == 2
+    reloaded = Planner(planner.cfg)
+    assert reloaded.tables(replace(BUILD, atk=BUILD.atk * 1.3 ** 2), "mall") is not None   # from disk

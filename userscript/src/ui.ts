@@ -9,7 +9,8 @@ import { Farmer } from './farmer.ts'
 import type { HistoryRow, LogLevel, Progress } from './farmer.ts'
 import { int } from './format.ts'
 import { TabLock } from './lock.ts'
-import { DEFAULT_SETTINGS, MAPS, normalizeSettings, parseLoadout } from './settings.ts'
+import { BLESSING_SETS, FOCUS_AUTO } from './heirlooms.ts'
+import { DEFAULT_SETTINGS, MAPS, normalizeSettings, parseLoadout, validFocus } from './settings.ts'
 import type { Settings } from './settings.ts'
 import { load, save } from './storage.ts'
 
@@ -186,6 +187,8 @@ export function mountPanel(): void {
     // ---------------------------------------------------------------- 设置表单
     const form = h('div', { className: 'form' })
     const inputs: HTMLElement[] = []
+    /** 运行状态变化后重新计算的启用状态（例如只在「指定两套」时可用的下拉框） */
+    const refreshers: (() => void)[] = []
     const persist = () => save('settings', settings)
 
     function field(label: string, input: HTMLInputElement | HTMLSelectElement, cls = ''): void {
@@ -205,6 +208,47 @@ export function mountPanel(): void {
             persist()
         })
         field(label, el, key === 'map' ? 'wide' : '')
+    }
+
+    /** 追寻祝福：沿用游戏内选择 / 自动（缺件最多的两套）/ 指定两套（两个下拉框，只在「指定」时生效） */
+    function focusPicker(): void {
+        const mode = h('select')
+        for (const [value, caption] of [
+            ['last', '沿用游戏内上次的选择'],
+            [FOCUS_AUTO, '自动：缺件最多的两套'],
+            ['manual', '指定两套']
+        ]) {
+            mode.append(h('option', { value, textContent: caption }))
+        }
+        const pickers = [h('select'), h('select')]
+        const [first, second] = settings.focus.includes(',') ? settings.focus.split(',') : ['B06', 'B08']
+        pickers.forEach((el, i) => {
+            for (const [id, name] of BLESSING_SETS) {
+                el.append(h('option', { value: id, textContent: `${id.slice(1).replace(/^0/, '')}. ${name}` }))
+            }
+            el.value = i === 0 ? first : second
+        })
+        mode.value = settings.focus === '' ? 'last' : settings.focus === FOCUS_AUTO ? FOCUS_AUTO : 'manual'
+        const sync = () => {
+            const wanted =
+                mode.value === 'last'
+                    ? ''
+                    : mode.value === FOCUS_AUTO
+                      ? FOCUS_AUTO
+                      : `${pickers[0].value},${pickers[1].value}`
+            refresh()
+            if (!validFocus(wanted)) return // 两套相同：不保存，保留原设置
+            settings = { ...settings, focus: wanted }
+            persist()
+        }
+        mode.addEventListener('change', sync)
+        pickers.forEach(el => el.addEventListener('change', sync))
+        field('追寻祝福（正式下潜）', mode, 'wide')
+        field('指定：第一套', pickers[0])
+        field('指定：第二套', pickers[1])
+        const refresh = () => pickers.forEach(el => (el.disabled = running || mode.value !== 'manual'))
+        refreshers.push(refresh)
+        refresh()
     }
 
     type NumKey = 'runs' | 'goldReserve' | 'delay' | 'balanceGearScore'
@@ -259,6 +303,7 @@ export function mountPanel(): void {
     ])
     number('runs', '局数', { min: 1 })
     select('map', '地图', MAPS)
+    focusPicker()
     number('maxFloor', '最高层（到达即撤离）', { min: 1, placeholder: '不限' })
     number('goldReserve', '金币保留线', { min: 0, step: 10000 })
     text('loadout', '携带物资（物品id=数量，逗号分隔）')
@@ -332,6 +377,7 @@ export function mountPanel(): void {
         stopAfterBtn.disabled = !on
         stopNowBtn.disabled = !on
         for (const el of inputs) (el as HTMLInputElement).disabled = on
+        for (const fn of refreshers) fn()
         if (!on) liveCells.state.textContent = '空闲'
     }
 

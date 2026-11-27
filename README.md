@@ -64,6 +64,7 @@ as safe, so early floors pass without a stop at every elite (`--rush-elites off`
 | `mdp.py` | Markov decision process of a run (floor × effective HP × decision point), solved by backward induction; the heal budget is priced with a Lagrange multiplier. |
 | `markov_policy.py` | `MarkovPolicy`: `BossFarmPolicy` whose heal/fight/flee/rush/step decisions come from the solved tables (`--policy markov`). Tables are cached in `cache/`. |
 | `offline.py` | Plays complete runs offline against the game's own engine (from the bot repository), for policy comparisons. |
+| `trial.py` | The weekly fixed-seed trial 「来自群星的寓言集」: searches the deepest route in the local engine, then replays it live with a state check after every move. |
 | `farm.py` | Runner: tickets, restocking, start/resume runs, logging (`logs/trace_*.jsonl`, `logs/runs.csv`), rainbow detection, auto-stop when all rainbows are unlocked. |
 | `tests/` | Unit tests for the pure logic (`python -m pytest -q tests`). |
 | `docs/` | Game formulas, in-game guide dump, notes (`GAME_NOTES.md`). |
@@ -100,7 +101,11 @@ An interrupted run is resumed automatically on the next start.
 
 The default loadout carries every shop heal and smoke bombs at the live carry limit (50 each) plus two
 adrenaline shots. Real runs pursue two blessing sets (追寻): `--focus 6,8` picks them by number (or id,
-`B06,B08`); without it the pair chosen last time is reused, and the run is not started if there is none.
+`B06,B08`); `--focus auto` picks the two sets with most pieces still missing before every run, which
+gives the most new pieces per shining drop (a missing piece weighs twice an owned one, so a set with m
+of 4 missing yields a new piece with probability 2m/(m+4)). Without `--focus` the pair chosen last time
+is reused, and the run is not started if there is none. Each real run logs the pursued sets and the
+chance that a shining drop is new.
 Fallen players' bags (遗物盒) are returned for the bounty (捞尸, 55% of their value with 专业捞尸), unless they are
 worth at least `--relic-loot-value` (default 10,000,000 gold): those are looted (舔包), the safe box takes the
 most valuable items, and while loot worth that much is still outside it, the agent extracts at the next safe
@@ -115,7 +120,11 @@ The run is modelled as a Markov decision process: state = floor, effective HP (H
 decision point (between floors / normal or elite waiting / boss window); actions = heal with a given
 item, fight, flee, single step, rush; reward = +1 per boss kill. Transitions come from the combat model
 (`model.py`) and the server's encounter odds; the tables are solved backward from F4000 (~3 min, then
-cached per build). The heal stock is a run-long budget: instead of tracking the full inventory, each
+cached). Tables are solved for the build snapped down to a 5% grid (`MarkovConfig.bucket`), so similar
+builds of different runs share one cached solve; `cache/` keeps the 20 most recently used solves. A new
+solve runs in a background thread (`--solve background`, the default): the run keeps going on the
+previous tables, or the threshold rules before the first ones, and switches when the solve is done.
+`offline.py` uses `--solve blocking` so that comparisons stay reproducible. The heal stock is a run-long budget: instead of tracking the full inventory, each
 heal unit gets a price λ, tables are solved for a grid of prices, and every decision picks the price
 that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences worth knowing:
 
@@ -143,6 +152,33 @@ Offline comparison against the game engine (needs a checkout of `SlimeTROH/longn
 ```bash
 python offline.py --engine ../longniang-qqbot --runs 30 --policies threshold,markov
 ```
+
+When running several offline comparisons in parallel, start each with `OPENBLAS_NUM_THREADS=1` (or 2):
+the solver's matrices are small, and several processes with a BLAS thread per core starve each other
+(measured: 30x slower).
+
+## Weekly trial 「来自群星的寓言集」 (`trial.py`)
+
+The trial (prophecy.py in the game) gives every entrant of an ISO week the same build, supplies and floors,
+and seeds every roll - encounters, loot, events, fights and flee attempts - from the week, the floor and
+the round. The same moves from the same state always give the same result, so the route can be searched
+in the game's own engine and replayed live:
+
+```bash
+python trial.py plan --engine ../longniang-qqbot --out logs/trial
+python trial.py replay --route logs/trial/route.json --i-understand-live
+```
+
+The planner keeps the farm policy for events, temp gear and field items. It decides every encounter
+by beam search over flee / fight / heals and field items, scoring outcomes by HP plus the value of
+what is left. It picks each star relic by playing both options through the next two bosses. When no
+line survives a boss, it extracts on that floor (ranked above dying there). The replay compares the
+live state with the plan after every move and stops at the first difference (`--on-divergence policy`
+finishes the run with the plain trial policy instead). After a network error it resends a move only if
+the server's revision did not move. The score counts the best attempt, and attempts are free.
+
+Week 2026-W48 (黑洞视界 · 群星的低语): planned and played to F1290 (1289 cleared, extracted at a boss no
+searched line survives); the next best entry stopped at F330.
 
 ## Browser userscript
 

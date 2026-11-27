@@ -163,3 +163,30 @@ def test_wind_feather_adds_flee_after_the_cap():
     assert flee_chance(replace(b, agi=200, flee_bonus=0.2), 1) == 1.0
     state = {"atlas": {"rainbow": [{"id": "prism_wind", "unlocked": True}, {"id": "prism_sun", "unlocked": False}]}}
     assert rainbow_flee_bonus(state) == pytest.approx(0.2)
+
+
+def _collection(owned: dict, focus=("S1", "S2")) -> dict:
+    sets = {f"S{i}": {"name": f"set{i}"} for i in range(1, 5)}
+    pieces = {f"S{i}-{j}": {"name": f"p{i}{j}", "set": f"S{i}"} for i in range(1, 5) for j in range(1, 5)}
+    return {"sets": sets, "pieces": pieces, "owned": owned, "focus": list(focus)}
+
+
+def test_auto_focus_pursues_the_sets_with_most_pieces_missing():
+    full = {f"S1-{j}": 1 for j in range(1, 5)}                        # S1 complete
+    coll = _collection({**full, "S2-1": 1, "S2-2": 1, "S3-1": 1})      # missing: S2 2, S3 3, S4 4
+    assert heirlooms.resolve_focus(coll, "auto") == ["S4", "S3"]
+    assert heirlooms.resolve_focus(coll, "AUTO") == ["S4", "S3"]
+
+
+def test_auto_focus_keeps_a_pursued_set_on_a_tie_and_the_last_pair_when_complete():
+    coll = _collection({"S1-1": 1, "S2-1": 1, "S3-1": 1, "S4-1": 1}, focus=("S3", "S1"))   # 3 missing each
+    assert heirlooms.auto_focus(coll) == ["S1", "S3"]
+    complete = _collection({p: 1 for p in _collection({})["pieces"]}, focus=("S2", "S4"))
+    assert heirlooms.auto_focus(complete) == ["S2", "S4"]
+
+
+def test_new_drop_chance_follows_the_server_weights():
+    coll = _collection({"S1-1": 1, "S1-2": 1, "S1-3": 1})              # S1: 1 missing, S2: 4 missing
+    # S1: 2 / (2 + 3) = 0.4; S2: all missing = 1.0; equal odds between the two sets
+    assert heirlooms.new_drop_chance(coll, ["S1", "S2"]) == pytest.approx(0.7)
+    assert heirlooms.missing_by_set(coll) == {"S1": 1, "S2": 4, "S3": 4, "S4": 4}

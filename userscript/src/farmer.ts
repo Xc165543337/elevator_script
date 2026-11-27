@@ -9,7 +9,8 @@ import DEFAULT_CALIBRATION from '../../calibration.json'
 import { battleEnemy, Calibration } from './combat.ts'
 import type { CalibrationData } from './combat.ts'
 import { ElevatorClient, GameError, NetworkError } from './client.ts'
-import { int } from './format.ts'
+import { int, pct } from './format.ts'
+import { missingBySet, newDropChance, resolveFocus } from './heirlooms.ts'
 import { floorMix, MIX_KINDS, parseFloorOdds } from './model.ts'
 import { DEFAULT_MARKOV, MarkovPolicy, Planner } from './markov.ts'
 import { AgentError, BossFarmPolicy } from './policy.ts'
@@ -476,14 +477,19 @@ export class Farmer {
 
     // ------------------------------------------------------------- 单局
     /**
-     * 正式下潜追寻的两套闪耀祝福（2026-11-25 起必选）：沿用上次在开局页选定的两套。
-     * 服务器没有祝福系统时返回 null；尚未选过时返回 undefined。
+     * 正式下潜追寻的两套闪耀祝福（2026-11-25 起必选），按设置「追寻祝福」：沿用游戏内上次的选择、
+     * 自动（缺件最多的两套）或指定两套。服务器没有祝福系统时返回 null；没有可用选择时返回 undefined。
      */
     private pursuit(): string[] | null | undefined {
+        return resolveFocus(this.client.state.heirlooms, this.settings.focus)
+    }
+
+    private logPursuit(): void {
         const h = this.client.state.heirlooms
-        if (!h) return null
-        const focus = (h.focus || []) as string[]
-        return focus.length === 2 && focus[0] !== focus[1] ? [...focus] : undefined
+        if (!h || !this.focus) return
+        const missing = missingBySet(h)
+        const names = this.focus.map(k => `${h.sets?.[k]?.name ?? k}（缺 ${missing.get(k) ?? 0} 件）`).join('、')
+        this.log(`本局追寻 ${names}：闪耀掉落是新部件的概率 ${pct(newDropChance(h, this.focus))}`)
     }
 
     /** 进行中的正式局仍缺追寻选择时（本局补选追寻）补发 */
@@ -707,10 +713,11 @@ export class Farmer {
                         }
                         const focus = this.pursuit()
                         if (focus === undefined) {
-                            this.log('正式下潜需要两套追寻祝福：请先在开局页选择两套后再运行', 'warn')
+                            this.log('正式下潜需要两套追寻祝福：在设置「追寻祝福」中选择，或先在开局页选择两套', 'warn')
                             break
                         }
                         this.focus = focus
+                        this.logPursuit()
                         if (s.restock) await this.restock(loadout)
                     }
                     await this.ensureRushSettings()

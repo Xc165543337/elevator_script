@@ -312,3 +312,19 @@ it('「为了我所期待的」：把结果里的预览交给下一次决策，�
     expect((farmer.policy as WishPolicy).previews).toEqual([{ enemy: '首领', value: 0, token: 'tok' }])
     expect(logs.some(m => m.includes('首领 #1 击败'))).toBe(true)
 })
+
+it('正式下潜按设置自动追寻缺件最多的两套', async () => {
+    const server = fakeServer()
+    server.state.player.tickets = 1
+    const sets = Object.fromEntries(['B01', 'B02', 'B03'].map(k => [k, { name: k }]))
+    const pieces = Object.fromEntries(
+        ['B01', 'B02', 'B03'].flatMap(k => [1, 2, 3, 4].map(j => [`${k}-${j}`, { name: `${k}-${j}`, set: k }]))
+    )
+    // B01 已集齐，B02 缺 2 件，B03 缺 4 件
+    const owned = { 'B01-1': 1, 'B01-2': 1, 'B01-3': 1, 'B01-4': 1, 'B02-1': 1, 'B02-2': 1 }
+    server.state.heirlooms = { focus: ['B01', 'B02'], needs_focus: false, owned, pieces, sets }
+    const { farmer, logs } = makeFarmer(server, { mode: 'real', runs: 1, restock: false, focus: 'auto' })
+    await farmer.run()
+    expect(server.starts[0]).toMatchObject({ focus: ['B03', 'B02'] })
+    expect(logs.some(([m]) => m.includes('本局追寻') && m.includes('83%'))).toBe(true) // (1 + 2/3) / 2
+})
