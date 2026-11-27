@@ -516,3 +516,23 @@ def test_an_unreadable_cache_file_is_removed_and_solved_again(tmp_path):
     assert tables is not None and tables.config == TINY
     assert Planner(cfg).tables(BUILD, "mall") is not None   # the new solve was saved readable
     assert not list(tmp_path.glob("*.part"))                # and no temporary file was left
+
+
+def test_loading_cached_tables_reads_the_boss_array_once(tmp_path, monkeypatch):
+    """Each NpzFile["boss"] decompresses the whole stacked array again; once per boss floor it was ~200
+    full copies in memory for an F4000 solve (a resumed run froze the machine loading its cache)."""
+    from mdp import load_tables, save_tables
+    tables = solve(BUILD, "mall", TINY)
+    path = str(tmp_path / "t.npz")
+    save_tables(tables, path)
+    reads = []
+    original = np.lib.npyio.NpzFile.__getitem__
+
+    def counting(self, key):
+        reads.append(key)
+        return original(self, key)
+
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", counting)
+    loaded = load_tables(path, BUILD, "mall", TINY)
+    assert reads.count("boss") == 1 and len(loaded.boss) == len(tables.boss) > 1
+    assert all(np.array_equal(loaded.boss[f], tables.boss[f]) for f in tables.boss)
