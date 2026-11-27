@@ -163,6 +163,9 @@ boss kill:
   no way on is worth more than banking the bag. It usually does so at a boss it cannot beat; it does not
   stop early, because a loss of the bag is avoidable until a hopeless fight.
 - Tables for both objectives are cached separately (the objective is part of the cache key).
+- Offline, mall, 3 runs each (offline character): boss mode banked 5.5M per run (two deaths kept only the
+  safe box) with 87.3 bosses; gold mode banked 11.9M (two extractions at F1771-1773 with 16.7M and 18.9M,
+  one death) with 88.0 bosses.
 
 ```bash
 python farm.py --mode real --policy markov --objective gold --i-understand-real
