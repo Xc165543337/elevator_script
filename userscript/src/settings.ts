@@ -2,6 +2,8 @@
 // settings.ts — 可在面板中配置的参数（对应 farm.py 的命令行选项）
 // ============================================================================
 
+import { BLESSING_SETS, FOCUS_AUTO } from './heirlooms.ts'
+
 export const MAPS: [string, string][] = [
     ['mall', '废弃商场（刷首领最佳）'],
     ['subway', '地铁'],
@@ -34,6 +36,8 @@ export interface Settings {
     /** threshold = 手调规则（policy.ts）；markov = 求解的马尔可夫决策过程（markov.ts，后台求解约 5 分钟） */
     policy: 'threshold' | 'markov'
     map: string
+    /** 正式下潜追寻的两套祝福：'' = 沿用游戏内上次的选择，'auto' = 缺件最多的两套，'B03,B08' = 指定 */
+    focus: string
     runs: number
     /** 到达即撤离；null = 不限 */
     maxFloor: number | null
@@ -56,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
     mode: 'sim',
     policy: 'threshold',
     map: 'mall',
+    focus: '',
     runs: 1,
     maxFloor: null,
     loadout: DEFAULT_LOADOUT,
@@ -92,6 +97,8 @@ export function normalizeSettings(saved: unknown): Settings {
             if (value === 'sim' || value === 'real') out.mode = value
         } else if (key === 'policy') {
             if (value === 'threshold' || value === 'markov') out.policy = value
+        } else if (key === 'focus') {
+            if (typeof value === 'string' && validFocus(value)) out.focus = value
         } else if (key === 'map') {
             if (typeof value === 'string' && MAPS.some(([id]) => id === value)) out.map = value
         } else if (typeof value === typeof def && (typeof value !== 'number' || Number.isFinite(value))) {
@@ -100,6 +107,13 @@ export function normalizeSettings(saved: unknown): Settings {
     }
     if (OLD_DEFAULT_LOADOUTS.has(out.loadout)) out.loadout = DEFAULT_LOADOUT
     return out
+}
+
+/** 追寻设置的合法值：''、'auto' 或两套不同的已知祝福 'B03,B08' */
+export function validFocus(value: string): boolean {
+    if (value === '' || value === FOCUS_AUTO) return true
+    const pair = value.split(',')
+    return pair.length === 2 && pair[0] !== pair[1] && pair.every(k => BLESSING_SETS.some(([id]) => id === k))
 }
 
 /** "field_surgery=12,coffee=10" → {field_surgery: 12, coffee: 10}；数量省略时为 1 */

@@ -22,14 +22,55 @@ class FocusError(ValueError):
     """No valid pair of blessing sets to pursue."""
 
 
+AUTO = "auto"
+
+
+def missing_by_set(heirlooms: dict | None) -> dict[str, int]:
+    """Pieces not yet owned, per set id in server order."""
+    have = owned(heirlooms)
+    pieces = (heirlooms or {}).get("pieces") or {}
+    return {key: sum(1 for p, spec in pieces.items() if spec.get("set") == key and not have[p])
+            for key in (heirlooms or {}).get("sets") or {}}
+
+
+def new_drop_chance(heirlooms: dict | None, pair: list[str]) -> float:
+    """P(a shining drop is a piece not owned yet) when pursuing `pair`: the drop picks one of the two sets
+    with equal odds, and a missing piece weighs twice an owned one (game heirlooms.roll), so with m of a
+    set's 4 pieces missing it is new with probability 2m / (m + 4)."""
+    pieces = (heirlooms or {}).get("pieces") or {}
+    have = owned(heirlooms)
+    chances = []
+    for key in pair:
+        parts = [p for p, spec in pieces.items() if spec.get("set") == key]
+        missing = sum(1 for p in parts if not have[p])
+        weight = 2 * missing + (len(parts) - missing)
+        chances.append(2 * missing / weight if weight else 0.0)
+    return sum(chances) / len(chances) if chances else 0.0
+
+
+def auto_focus(heirlooms: dict) -> list[str]:
+    """The two sets with most pieces still missing: the most new pieces per shining drop. Ties keep a
+    set already pursued, then server order; with nothing missing anywhere the last choice stays."""
+    missing = missing_by_set(heirlooms)
+    last = list(heirlooms.get("focus") or [])
+    if not any(missing.values()) and len(last) == 2 and last[0] != last[1]:
+        return last
+    order = list(missing)
+    ranked = sorted(order, key=lambda k: (-missing[k], k not in last, order.index(k)))
+    return ranked[:2]
+
+
 def resolve_focus(heirlooms: dict | None, wanted: str | None) -> list[str] | None:
     """The two set ids to pursue, or None on a server without blessings.
     `wanted`: two sets by id or by number in server order (1-based, like the chat command 追寻 1 8),
-    separated by commas or spaces; None reuses the last choice."""
+    separated by commas or spaces; "auto" for the sets with most pieces missing (auto_focus); None
+    reuses the last choice."""
     if not heirlooms:
         return None
     sets = list(heirlooms.get("sets") or {})
-    if wanted:
+    if wanted and wanted.strip().lower() == AUTO:
+        picks = auto_focus(heirlooms)
+    elif wanted:
         picks = []
         for token in filter(None, re.split(r"[,\s]+", wanted.strip())):
             if token in sets:

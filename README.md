@@ -101,7 +101,11 @@ An interrupted run is resumed automatically on the next start.
 
 The default loadout carries every shop heal and smoke bombs at the live carry limit (50 each) plus two
 adrenaline shots. Real runs pursue two blessing sets (追寻): `--focus 6,8` picks them by number (or id,
-`B06,B08`); without it the pair chosen last time is reused, and the run is not started if there is none.
+`B06,B08`); `--focus auto` picks the two sets with most pieces still missing before every run, which
+gives the most new pieces per shining drop (a missing piece weighs twice an owned one, so a set with m
+of 4 missing yields a new piece with probability 2m/(m+4)). Without `--focus` the pair chosen last time
+is reused, and the run is not started if there is none. Each real run logs the pursued sets and the
+chance that a shining drop is new.
 Fallen players' bags (遗物盒) are returned for the bounty (捞尸, 55% of their value with 专业捞尸), unless they are
 worth at least `--relic-loot-value` (default 10,000,000 gold): those are looted (舔包), the safe box takes the
 most valuable items, and while loot worth that much is still outside it, the agent extracts at the next safe
