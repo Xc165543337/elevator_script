@@ -28,6 +28,7 @@ policy still handles their content).
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from dataclasses import astuple, dataclass, field, replace
 from typing import Callable
@@ -83,7 +84,7 @@ def loot_profile(config: "MdpConfig", map_id: str, top: int) -> tuple[np.ndarray
 def death_of(*kernels: np.ndarray) -> np.ndarray:
     """P(death) per start state of a kernel split into survival parts (rows of kill / draw / cont / lands)."""
     return np.clip(1.0 - sum(k.sum(axis=1) for k in kernels), 0.0, 1.0)
-MODEL_VERSION = 8            # bump when the dynamics change, to invalidate cached tables
+MODEL_VERSION = 9            # bump when the dynamics change, to invalidate cached tables
 
 
 # --------------------------------------------------------------------------- heal items
@@ -410,10 +411,11 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
     full = interp_matrix(np.array([1.0]), grid)[0]                     # weights of e = 1.0
     low = (grid <= RUSH_STOP_HP)[None, :]                              # rush stops at HP <= 50%
 
+    # Floor tables are stored as float32 while solving (half the memory; they are saved as float32 anyway).
     shape = (top + 2, nl, n)
-    ready, step, rush, rush_elite = np.zeros(shape), np.zeros(shape), np.zeros(shape), np.zeros(shape)
-    arrive = np.zeros(shape)
-    encounter = {"normal": np.zeros(shape), "elite": np.zeros(shape)}
+    ready, step, rush, rush_elite = (np.zeros(shape, np.float32) for _ in range(4))
+    arrive = np.zeros(shape, np.float32)
+    encounter = {"normal": np.zeros(shape, np.float32), "elite": np.zeros(shape, np.float32)}
     boss_tables: dict[int, np.ndarray] = {}
     # rush continuation: mid[h][j-1] = value about to enter floor h with j floors left (not the first)
     mid = {top + 1: np.zeros((RUSH_FLOORS, nl, n)), top + 2: np.zeros((RUSH_FLOORS, nl, n))}
@@ -546,13 +548,28 @@ def solve(build: Build, map_id: str = "mall", config: MdpConfig = MdpConfig(),
                 mid_elite[g + 1] = layers
                 mid_elite.pop(g + 3, None)
             pause_reached.pop(g + 2, None)
+        # kernels are only used while the induction passes their block (this floor and the rush entry above
+        # it): drop the ones above, as the userscript does - hundreds of MB by F4000
+        keep = reference(g)
+        for key in [k for k in kernels if k[1] > keep]:
+            del kernels[key]
         if progress and g % 200 == 0:
-            progress(f"mdp: floor {g} ({time.time() - t0:.0f}s)")
+            rss = _rss_mb()
+            progress(f"mdp: floor {g} ({time.time() - t0:.0f}s{f', {rss} MB' if rss else ''})")
     return ValueTables(config=config, build=build, map_id=map_id, grid=grid, boss_grid=boss_grid,
                        lambdas=lambdas, smoke_prices=smoke_prices, ready=f32(ready), step=f32(step),
                        rush=f32(rush), rush_elite=f32(rush_elite),
                        encounter={k: f32(v) for k, v in encounter.items()},
                        boss={f: f32(v) for f, v in boss_tables.items()}, solve_seconds=time.time() - t0)
+
+
+def _rss_mb() -> int | None:
+    """Resident memory of this process in MB (Linux; None elsewhere), for the progress log."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as fh:
+            return next(int(line.split()[1]) // 1024 for line in fh if line.startswith("VmRSS"))
+    except (OSError, StopIteration, ValueError):
+        return None
 
 
 def f32(a: np.ndarray) -> np.ndarray:
@@ -592,6 +609,12 @@ def _solve_boss(build: Build, foe: dict, grid: np.ndarray, boss_grid: np.ndarray
     return values
 
 
+# For slow machines (--solver light): a quarter of the Monte Carlo fights per kernel, kernels shared by twice
+# as many floors, fewer boss sweeps. Measured: 104 s instead of 178 s for F4000, values within ~2% at F1-F2000
+# (median 7% relative over all states).
+LIGHT = {"samples": 64, "kernel_stride": 8, "pause_samples": 32, "boss_iterations": 30}
+
+
 def tables_key(build: Build, map_id: str, config: MdpConfig) -> str:
     """Stable cache key of a solve."""
     text = repr((MODEL_VERSION, map_id, astuple(build), astuple(config)))
@@ -604,7 +627,17 @@ def save_tables(tables: ValueTables, path: str) -> None:
               "boss_floors": np.array(sorted(tables.boss), dtype=int)}
     if tables.boss:
         arrays["boss"] = np.stack([tables.boss[f] for f in sorted(tables.boss)])
-    np.savez_compressed(path, **{k: (v.astype(np.float32) if v.dtype.kind == "f" else v) for k, v in arrays.items()})
+    # Write next to the target, then rename: a process stopped mid-write (Ctrl+C while a background solve
+    # saves) leaves a stray .part file, never a truncated cache entry that a later run would try to read.
+    part = f"{path}.{os.getpid()}.part"
+    try:
+        with open(part, "wb") as fh:
+            np.savez_compressed(fh, **{k: (v.astype(np.float32) if v.dtype.kind == "f" else v)
+                                       for k, v in arrays.items()})
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
 
 
 def load_tables(path: str, build: Build, map_id: str, config: MdpConfig) -> ValueTables:

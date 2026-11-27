@@ -16,6 +16,8 @@ decide the score. Everything between them is played to arrive at each boss with 
 """
 from __future__ import annotations
 
+import blas  # noqa: F401  (before numpy: single-threaded BLAS, see blas.py)
+
 import argparse
 import copy
 import json

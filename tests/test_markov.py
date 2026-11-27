@@ -98,13 +98,13 @@ def test_interp_matrix_reproduces_linear_functions():
 
 def test_values_are_sane(tables):
     free = 0  # lambda index of free healing
-    assert np.all(tables.ready >= -1e-9)
-    assert tables.at(tables.ready, 1, 1.0)[free] <= len(boss_floors(SMALL.max_floor - 1)) + 1e-9
+    assert np.all(tables.ready >= -1e-5)                      # float32 tables
+    assert tables.at(tables.ready, 1, 1.0)[free] <= len(boss_floors(SMALL.max_floor - 1)) + 1e-4
     costly = len(tables.lambdas) - 1  # with expensive heals HP itself carries value
     assert tables.at(tables.ready, 100, 1.0)[costly] > tables.at(tables.ready, 100, 0.2)[costly]
     assert np.all(np.diff(tables.ready[100][costly]) >= -0.02)                 # monotone up to MC noise
     # a single step offers every option a rush has, so rushing is never worth more
-    assert np.all(tables.rush[1:200] <= tables.step[1:200] + 1e-9)
+    assert np.all(tables.rush[1:200] <= tables.step[1:200] + 1e-5)
 
 
 # ------------------------------------------------------------------ policy
@@ -503,3 +503,16 @@ def test_bag_at_risk_counts_the_bag_only():
     from markov_policy import bag_at_risk
     run = {"bag": [{"value": 48_000, "quantity": 10}, {"value": 2_000}], "safe": [{"value": 48_000}]}
     assert bag_at_risk(run) == pytest.approx(0.482)
+
+
+def test_an_unreadable_cache_file_is_removed_and_solved_again(tmp_path):
+    from markov_policy import Planner, bucket, quantize
+    cfg = MarkovConfig(cache_dir=str(tmp_path), mdp=TINY, background=False)
+    planner = Planner(cfg)
+    path = planner._path(bucket(quantize(BUILD), cfg.bucket), "mall")
+    with open(path, "wb") as fh:
+        fh.write(b"PK\x03\x04 truncated")                 # what a save stopped half way leaves behind
+    tables = planner.tables(BUILD, "mall")
+    assert tables is not None and tables.config == TINY
+    assert Planner(cfg).tables(BUILD, "mall") is not None   # the new solve was saved readable
+    assert not list(tmp_path.glob("*.part"))                # and no temporary file was left

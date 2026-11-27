@@ -16,6 +16,8 @@ pause, encounter odds, blessings); pass --rules legacy for an older checkout.
 """
 from __future__ import annotations
 
+import blas  # noqa: F401  (before numpy: single-threaded BLAS, see blas.py)
+
 import argparse
 import csv
 import os
