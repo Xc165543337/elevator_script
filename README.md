@@ -177,6 +177,12 @@ Offline comparison against the game engine (needs a checkout of `SlimeTROH/longn
 python offline.py --engine ../longniang-qqbot --runs 30 --policies threshold,markov
 ```
 
+**Resources.** `farm.py`, `offline.py` and `trial.py` run numpy's BLAS single-threaded (`blas.py`): the
+matrices are small, and BLAS threads busy-wait, so with the default one thread per core a 12-core laptop
+showed every core at 100%. Set `OPENBLAS_NUM_THREADS` to override. A full solve peaks at about 0.6 GB and
+runs at the lowest CPU priority; each progress line shows the process's memory. On a slow machine use
+`--solver light` (solves 104 s instead of 178 s, live decisions with 2.5x fewer fights).
+
 When running several offline comparisons in parallel, start each with `OPENBLAS_NUM_THREADS=1` (or 2):
 the solver's matrices are small, and several processes with a BLAS thread per core starve each other
 (measured: 30x slower).

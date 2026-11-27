@@ -219,6 +219,10 @@ class Planner:
             self._worker.start()
 
     def _work(self) -> None:
+        try:   # a background solve must not make the machine sluggish: lowest CPU priority (Linux / macOS)
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+        except (AttributeError, OSError):
+            pass
         while True:
             with self._lock:
                 wanted, self._wanted = self._wanted, None

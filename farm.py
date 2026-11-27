@@ -10,6 +10,8 @@ Real mode stops automatically once all four rainbow items are unlocked.
 """
 from __future__ import annotations
 
+import blas  # noqa: F401  (before numpy: single-threaded BLAS, see blas.py)
+
 import argparse
 import csv
 import json
@@ -26,7 +28,7 @@ from client import ElevatorClient, GameError
 import heirlooms
 from combat import Calibration, battle_enemy
 from markov_policy import MarkovConfig, MarkovPolicy
-from mdp import MdpConfig
+from mdp import LIGHT, MdpConfig
 from model import LEGACY_RULES, LIVE_RULES, floor_mix, parse_floor_odds
 from policy import SUPPLY_HEAL, BossFarmPolicy, PolicyConfig
 
@@ -98,8 +100,10 @@ class Farmer:
                               rules=LEGACY_RULES if args.rules == "legacy" else LIVE_RULES)
         if args.policy == "markov":
             gold = args.objective == "gold"
+            light = args.solver == "light"
+            mdp = MdpConfig(gold=gold, boss_value=args.gold_per_boss / 1e6 if gold else 1.0, **(LIGHT if light else {}))
             markov = MarkovConfig(cache_dir=os.path.join(HERE, "cache"), background=args.solve == "background",
-                                  mdp=MdpConfig(gold=gold, boss_value=args.gold_per_boss / 1e6 if gold else 1.0))
+                                  mdp=mdp, live_samples=120 if light else 300, pause_samples=24 if light else 48)
             self.policy = MarkovPolicy(self.cal, config, markov, log=self.log)
         else:
             self.policy = BossFarmPolicy(self.cal, config)
@@ -540,6 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "--gold-per-boss per boss kill (extracts when banking the bag beats going on)")
     ap.add_argument("--gold-per-boss", type=float, default=1_000_000,
                     help="gold objective: what one boss kill is worth to you (shining / rainbow chances), in gold")
+    ap.add_argument("--solver", choices=("full", "light"), default="full",
+                    help="markov: light = fewer Monte Carlo fights for slow machines (solves ~1.7x faster, "
+                         "live decisions use 2.5x fewer fights; values slightly noisier)")
     ap.add_argument("--solve", choices=("background", "blocking"), default="background",
                     help="markov: solve value tables in a background thread and keep playing on the previous ones "
                          "(or the threshold rules) meanwhile; blocking = wait for every solve (reproducible)")

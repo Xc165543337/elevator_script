@@ -98,13 +98,13 @@ def test_interp_matrix_reproduces_linear_functions():
 
 def test_values_are_sane(tables):
     free = 0  # lambda index of free healing
-    assert np.all(tables.ready >= -1e-9)
-    assert tables.at(tables.ready, 1, 1.0)[free] <= len(boss_floors(SMALL.max_floor - 1)) + 1e-9
+    assert np.all(tables.ready >= -1e-5)                      # float32 tables
+    assert tables.at(tables.ready, 1, 1.0)[free] <= len(boss_floors(SMALL.max_floor - 1)) + 1e-4
     costly = len(tables.lambdas) - 1  # with expensive heals HP itself carries value
     assert tables.at(tables.ready, 100, 1.0)[costly] > tables.at(tables.ready, 100, 0.2)[costly]
     assert np.all(np.diff(tables.ready[100][costly]) >= -0.02)                 # monotone up to MC noise
     # a single step offers every option a rush has, so rushing is never worth more
-    assert np.all(tables.rush[1:200] <= tables.step[1:200] + 1e-9)
+    assert np.all(tables.rush[1:200] <= tables.step[1:200] + 1e-5)
 
 
 # ------------------------------------------------------------------ policy
