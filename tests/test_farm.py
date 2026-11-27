@@ -202,3 +202,9 @@ def test_farming_goes_on_after_the_rainbows_while_blessing_pieces_are_missing(tm
     assert Farmer(args, client=RecordingClient({"atlas": atlas, "heirlooms": complete})).left_to_collect() == 0
     rainbow_missing = {"rainbow": [{"name": "熔阳刻痕", "unlocked": False}]}
     assert Farmer(args, client=RecordingClient({"atlas": rainbow_missing, "heirlooms": complete})).left_to_collect() is None
+
+
+def test_banked_value_is_read_from_the_run_summary():
+    import farm
+    m = farm._BANKED.search("安全撤离 · 第 704 层 · 保住 10,143,144 金物资")
+    assert int(m.group(1).replace(",", "")) == 10_143_144

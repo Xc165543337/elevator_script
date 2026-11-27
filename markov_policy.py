@@ -123,6 +123,11 @@ def smoke_count(run: dict) -> int:
     return sum(it.get("quantity") or 1 for it in run.get("bag") or [] if it.get("id") == "smoke")
 
 
+def bag_at_risk(run: dict) -> float:
+    """What a death would lose now, in million gold: the bag (the safe box is kept)."""
+    return sum(float(it.get("value") or 0) * (it.get("quantity") or 1) for it in run.get("bag") or []) / 1e6
+
+
 def effective_hp(run: dict) -> float:
     return (run["hp"] + (run.get("shield") or 0)) / run["max_hp"]
 
@@ -402,6 +407,7 @@ class MarkovPolicy(BossFarmPolicy):
         up to its pause, valued with heals at the pause and the remaining rounds. Bosses: one window,
         then the boss table. The death probability covers this segment only."""
         g, grid = state["run"]["floor"], tables.grid
+        cost = bag_at_risk(state["run"]) if tables.config.gold else 0.0   # gold objective: a death loses the bag
         start, hp, shield = self._sim_starts(grid, build)
         ehp = np.full(len(start), float(enemy["hp"]))
         if enemy.get("boss"):
@@ -414,7 +420,7 @@ class MarkovPolicy(BossFarmPolicy):
             nxt = tables.boss[g][min(window + 1, BOSS_WINDOWS) - 1][li]                 # (N, Nb)
             we = interp_matrix((hp + shield) / build.hp, grid)
             wb = interp_matrix(np.maximum(ehp, 0.0) / boss_max, tables.boss_grid)
-            win_value = 1.0 + float(np.interp(1.0, grid, tables.ready[g][li]))
+            win_value = tables.config.boss_value + float(np.interp(1.0, grid, tables.ready[g][li]))
             after = np.where(ehp <= 0, win_value, np.einsum("sn,nb,sb->s", we, nxt, wb))
         else:
             rules = self.mcfg.mdp.rules
@@ -425,12 +431,14 @@ class MarkovPolicy(BossFarmPolicy):
             e1 = (hp + shield) / build.hp
             after = np.interp(e1, grid, tables.ready[g][li])
             if pauses_after_segment(enemy, rules):
-                pause = self._elite_pause(state, tables, li, build, enemy)              # (N, Nb)
+                pause = self._elite_pause(state, tables, li, build, enemy, cost)        # (N, Nb)
                 elite_max = float(enemy.get("max_hp") or enemy["hp"])
                 we = interp_matrix(e1, grid)
                 wb = interp_matrix(np.maximum(ehp, 0.0) / elite_max, tables.boss_grid)
                 after = np.where(ehp > 0, np.einsum("sn,nb,sb->s", we, pause, wb), after)
-        value = isotonic(self._per_point(start, np.where(alive, after, 0.0), len(grid)))
+        value = self._per_point(start, np.where(alive, after, -cost), len(grid))
+        value[0] = -cost
+        value = isotonic(value)
         death = 1.0 - self._per_point(start, alive.astype(float), len(grid))
         death[0] = 1.0
         return value, death
@@ -469,7 +477,8 @@ class MarkovPolicy(BossFarmPolicy):
             return Decision("use", {"index": smoke["index"]}, f"{why} -> smoke out (ends the run as an extraction)")
         return None
 
-    def _elite_pause(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict) -> np.ndarray:
+    def _elite_pause(self, state: dict, tables: ValueTables, li: int, build: Build, enemy: dict,
+                     death_cost: float = 0.0) -> np.ndarray:
         """Values at the coming elite pause under price index li, [hp point, elite-hp point]: heals from
         the live inventory, then the remaining rounds against this elite. Guard / burst charges are
         assumed spent by then (conservative)."""
@@ -481,7 +490,11 @@ class MarkovPolicy(BossFarmPolicy):
         lands = elite_pause_kernel(later, foe, grid, tables.boss_grid, self.mcfg.pause_samples, self._rng,
                                    self.mcfg.mdp.rules)
         ready = tables.ready[run["floor"]][li][None, :]
-        return elite_pause_value(lands, ready, heal, len(tables.boss_grid))[0]
+        pause = elite_pause_value(lands, ready, heal, len(tables.boss_grid), death_cost)[0]
+        if tables.config.gold:                 # gold objective: extracting at the pause banks the bag
+            pause = np.maximum(pause, 0.0)
+            pause[0, :] = -death_cost
+        return pause
 
     def _encounter(self, state: dict, ctr: dict, tables: ValueTables) -> Decision:
         """Heal / field buff / grenade / smoke / flee / fight, whichever gives the most expected bosses.
@@ -541,12 +554,17 @@ class MarkovPolicy(BossFarmPolicy):
         healed = max([e, *(float(o.item.apply(np.array([e]), max_hp)[0]) for o in heals)])
         if self._wish_ready(state) and float(np.interp(healed, grid, death_curve)) >= self.mcfg.wish_min_death:
             ready = tables.ready[g][li]
-            q_wish = 1.0 + float(np.interp(1.0, grid, ready)) if boss else float(np.interp(e, grid, ready))
+            q_wish = (tables.config.boss_value + float(np.interp(1.0, grid, ready)) if boss
+                      else float(np.interp(e, grid, ready)))
             q_other = max(q_base, q_heal, q_prep, q_smoke)
             if q_wish - q_other >= self.mcfg.wish_gain * q_wish:
                 self._wish_sent = True
                 return Decision("field_use", {"id": WISH},
                                 f"{summary} -> wish kill ({q_wish:.2f} vs {q_other:.2f})")
+        q_other = max(q_base, q_heal, q_prep, q_smoke)
+        if tables.config.gold and "extract" in ctr and q_other < self.mcfg.heal_margin:   # nothing left to gain
+            return Decision("extract", {}, f"{summary} -> extract: banking {bag_at_risk(run):.1f}M is worth "
+                                           f"more than any way on ({q_other:.2f})")
         if smoke is not None and q_smoke > max(q_base, q_heal, q_prep) + self.mcfg.heal_margin:
             return Decision("use", {"index": smoke["index"]},
                             f"{summary} -> smoke ({q_smoke:.2f} vs {max(q_base, q_heal, q_prep):.2f})")
@@ -647,6 +665,9 @@ class MarkovPolicy(BossFarmPolicy):
         if elites:
             curve = np.maximum(curve, tables.rush_elite[g][li])
         option, q_heal, q_go = self._choose(e, lam, max_hp, curve, grid, self._heal_options(run, False))
+        if tables.config.gold and "extract" in ctr and max(q_go, q_heal) < self.mcfg.heal_margin:
+            return Decision("extract", {}, f"{summary}: banking {bag_at_risk(run):.1f}M beats going on "
+                                           f"({max(q_go, q_heal):.2f}) -> extract")
         if option and q_heal > q_go + self.mcfg.heal_margin:
             return Decision(option.decision.command, option.decision.params,
                             f"{summary} -> {option.decision.reason} ({q_heal:.2f})")

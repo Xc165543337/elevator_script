@@ -147,6 +147,27 @@ that matches the live stock (dual bound `min_λ V_λ + λ·H`). Consequences wor
   pause and the remaining 8 rounds after it (computed for the live elite at decision time; inside the
   solver from `kernel_stride` reference elites). The reported death risk covers the segment ahead only.
 
+### Gold objective (`--objective gold`)
+
+The default objective counts formal boss kills only, so the agent pushes on until a boss wall. With
+`--objective gold` the same solver maximises banked gold plus `--gold-per-boss` (default 1,000,000) per
+boss kill:
+
+- A run's loot is about a thousand items worth 2k-48k gold each, so the bag's value at a floor varies
+  little between runs. `mdp.LOOT_CURVES` holds it per map, measured in the game engine (mall: 0.75M at
+  F100, 6.1M at F500, 12.4M at F1000, 16M at F1500). Loot counts as it is found.
+- A death loses the bag; the 4-slot safe box keeps about 0.2M. Every fight's death probability is
+  charged with the bag at risk: in the solver the curve's value at that floor, in live fights the
+  actual bag.
+- Extracting is an action between floors, in a fight and during a boss window. The agent extracts when
+  no way on is worth more than banking the bag. It usually does so at a boss it cannot beat; it does not
+  stop early, because a loss of the bag is avoidable until a hopeless fight.
+- Tables for both objectives are cached separately (the objective is part of the cache key).
+
+```bash
+python farm.py --mode real --policy markov --objective gold --i-understand-real
+```
+
 Offline comparison against the game engine (needs a checkout of `SlimeTROH/longniang-qqbot`):
 
 ```bash

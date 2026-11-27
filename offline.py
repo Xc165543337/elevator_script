@@ -103,7 +103,9 @@ class LocalClient:
         supplies = [k for k, v in self.web.game.catalog.items.items() if v.get("kind") == "supply"]
         marks = ",".join("?" * len(supplies))
         with self.web.game.store.transaction() as db:
-            db.execute("UPDATE players SET gold=?, tickets=20, safebox=4 WHERE user_id=?", (GOLD, UID))
+            # runs >= 4: no 萌新防爆保险 (the first three runs keep the whole bag on death), as on a live account
+            db.execute("UPDATE players SET gold=?, tickets=20, safebox=4, runs=max(runs, 4) WHERE user_id=?",
+                       (GOLD, UID))
             db.execute(f"DELETE FROM inventory WHERE user_id=? AND item_id NOT IN ({marks})", (UID, *supplies))
             db.execute("DELETE FROM equipment WHERE user_id=?", (UID,))
         self.state = self.web.state(UID, GROUP, NICK, now=self.now)
@@ -119,6 +121,7 @@ def run_policy(policy: str, args: argparse.Namespace) -> list[dict]:
         "--mode", "real", "--policy", policy, "--runs", str(args.runs), "--map", "mall",
         "--delay", "0", "--log-dir", out_dir, "--gold-reserve", "0", "--sell-loot", "off", "--rules", args.rules,
         "--rush-elites", args.rush_elites, "--focus", args.focus, "--solve", "blocking",
+        "--objective", args.objective, "--gold-per-boss", str(args.gold_per_boss),
         *(["--loadout", args.loadout] if args.loadout else []),
     ])
     farmer = Farmer(farm_args, client=LocalClient(args.engine, db))
@@ -139,18 +142,22 @@ def main() -> None:
     ap.add_argument("--loadout", default=None, help="supplies to carry (farm.py format); default: farm.py's")
     ap.add_argument("--rush-elites", choices=("on", "off"), default="on", help="see farm.py --rush-elites")
     ap.add_argument("--focus", default="1,8", help="blessing sets a real run pursues (see farm.py --focus)")
+    ap.add_argument("--objective", choices=("bosses", "gold"), default="bosses", help="see farm.py --objective")
+    ap.add_argument("--gold-per-boss", type=float, default=1_000_000, help="see farm.py --gold-per-boss")
     ap.add_argument("--rules", choices=("live", "legacy"), default="live",
                     help="server rules of the engine checkout: live (f21568b and later) or legacy (older)")
     args = ap.parse_args()
     results = {p: run_policy(p, args) for p in args.policies.split(",")}
-    print("\npolicy      runs  bosses (mean +- se)  floor (mean)  steps (mean)")
+    print("\npolicy      runs  bosses (mean +- se)  floor (mean)  steps (mean)  banked gold (mean)  gold/step")
     for policy, rows in results.items():
         bosses = [int(r["bosses"]) for r in rows]
         floors = [int(r["floor"]) for r in rows]
         steps = [int(r["steps"]) for r in rows]
+        banked = [int(r.get("banked") or 0) for r in rows]
         se = statistics.stdev(bosses) / len(bosses) ** 0.5 if len(bosses) > 1 else 0.0
         print(f"{policy:<10} {len(rows):>5}  {statistics.mean(bosses):7.1f} +- {se:4.1f}      "
-              f"{statistics.mean(floors):8.0f}  {statistics.mean(steps):10.0f}")
+              f"{statistics.mean(floors):8.0f}  {statistics.mean(steps):10.0f}  {statistics.mean(banked):18,.0f}"
+              f"  {sum(banked) / max(1, sum(steps)):9,.0f}")
 
 
 if __name__ == "__main__":

@@ -449,3 +449,57 @@ def test_cache_keeps_the_most_recently_used_solves(tmp_path):
     assert len(list(tmp_path.glob("mdp_*.npz"))) == 2
     reloaded = Planner(planner.cfg)
     assert reloaded.tables(replace(BUILD, atk=BUILD.atk * 1.3 ** 2), "mall") is not None   # from disk
+
+
+# ------------------------------------------------------------------ gold objective
+WEAK = replace(BUILD, hp=400, defense=5, atk=90, leech=0.0, vampire=0.0)   # outmatched from about F70
+
+
+@pytest.fixture(scope="module")
+def gold_tables():
+    return solve(WEAK, "mall", replace(SMALL, gold=True, boss_value=0.2))
+
+
+def test_loot_curve_interpolates_and_extends_with_the_last_slope():
+    from mdp import LOOT_CURVES, loot_at
+    assert loot_at("mall", 0) == 0.0 and loot_at("mall", 100) == pytest.approx(0.75)
+    assert loot_at("mall", 150) == pytest.approx((0.75 + 1.71) / 2)
+    (x1, y1), (x2, y2) = LOOT_CURVES["mall"][-2:]
+    assert loot_at("mall", x2 + 100) == pytest.approx(y2 + 100 * (y2 - y1) / (x2 - x1))
+    assert loot_at("unknown", 300) == loot_at("mall", 300)           # unmeasured maps: the mall curve
+    assert loot_at("zenith", 100) > loot_at("mall", 100)             # richer maps find more per floor
+
+
+def test_gold_tables_bank_at_hopeless_bosses_and_never_go_below_extracting(gold_tables):
+    assert np.all(gold_tables.ready[1:200, :, 1:] >= -1e-6)                  # extracting is always possible
+    costly = len(gold_tables.lambdas) - 1
+    zeros = [int((gold_tables.boss[g][0][costly][1:] <= 1e-9).sum()) for g in (30, 90, 150, 190)]
+    assert zeros[0] == 0 and zeros == sorted(zeros) and zeros[-1] > 50       # deeper bosses: bank more often
+
+
+def test_gold_objective_adds_the_loot_found_and_keeps_boss_mode_unchanged(tables):
+    gold = solve(BUILD, "mall", replace(SMALL, gold=True))
+    full = np.searchsorted(tables.grid, 1.0)
+    from mdp import loot_at
+    # free heals, a build that survives the horizon: the gold run is worth the loot on top of the bosses
+    assert gold.ready[1][0][full] - tables.ready[1][0][full] == pytest.approx(loot_at("mall", 201), abs=0.05)
+    again = solve(BUILD, "mall", SMALL)
+    assert np.array_equal(again.ready, tables.ready)
+
+
+def test_gold_policy_extracts_instead_of_fighting_a_hopeless_boss(gold_tables, tmp_path):
+    p = make_policy(gold_tables, tmp_path)
+    p.mcfg = replace(p.mcfg, extract_below=0.0)                            # the table decides, not the outlook
+    p._affix_build = WEAK
+    loot = [{"id": "r05", "index": 9, "name": "红", "value": 48_000, "quantity": 30}]
+    s = state(floor=190, hp=400, foe=foe("boss", 190), bag=loot, controls=("fight", "extract"))
+    s["run"]["max_hp"] = 400
+    s["run"]["effective_stats"] = {"hp": 400, "atk": 90, "def": 5, "agi": WEAK.agi, "luk": WEAK.luk}
+    d = p.decide(s)
+    assert d.command == "extract", d.reason
+
+
+def test_bag_at_risk_counts_the_bag_only():
+    from markov_policy import bag_at_risk
+    run = {"bag": [{"value": 48_000, "quantity": 10}, {"value": 2_000}], "safe": [{"value": 48_000}]}
+    assert bag_at_risk(run) == pytest.approx(0.482)
