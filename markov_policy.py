@@ -19,6 +19,7 @@ import math
 import os
 import re
 import threading
+import zipfile
 from dataclasses import dataclass, field, fields, replace
 from typing import Callable
 
@@ -188,8 +189,15 @@ class Planner:
         path = self._path(build, map_id)
         if not os.path.exists(path):
             return None
+        try:
+            tables = load_tables(path, build, map_id, self.cfg.mdp)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, EOFError) as err:
+            # unreadable (e.g. written by an older version that could be stopped mid-save): solve again
+            self.log(f"mdp: cached tables {os.path.basename(path)} are unreadable ({err}); removing them")
+            os.remove(path)
+            return None
         os.utime(path)   # most recently used: kept longest by _prune
-        return load_tables(path, build, map_id, self.cfg.mdp)
+        return tables
 
     def _solve(self, build: Build, map_id: str) -> ValueTables:
         self.log(f"mdp: solving tables for {map_id} (atk {build.atk:.0f}, def {build.defense:.0f}, "

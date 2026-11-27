@@ -2,6 +2,15 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.4.1] — 2026-11-27
+
+油猴脚本无变化；本次只修复 Python 版。
+
+### Python 版
+
+- 修复 `zipfile.BadZipFile: File is not a zip file`：后台求解在保存价值表时若进程被停止（Ctrl+C、本局结束），会在 `cache/` 留下写了一半的文件，
+  下次启动读取时出错。现在先写临时文件再改名（原子保存）；读不出的缓存文件会被删除并重新求解
+
 ## [1.4.0] — 2026-11-27
 
 马尔可夫新增金币目标：同时刷物资与首领，划算时撤离带回背包。

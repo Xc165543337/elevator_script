@@ -28,6 +28,7 @@ policy still handles their content).
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from dataclasses import astuple, dataclass, field, replace
 from typing import Callable
@@ -604,7 +605,17 @@ def save_tables(tables: ValueTables, path: str) -> None:
               "boss_floors": np.array(sorted(tables.boss), dtype=int)}
     if tables.boss:
         arrays["boss"] = np.stack([tables.boss[f] for f in sorted(tables.boss)])
-    np.savez_compressed(path, **{k: (v.astype(np.float32) if v.dtype.kind == "f" else v) for k, v in arrays.items()})
+    # Write next to the target, then rename: a process stopped mid-write (Ctrl+C while a background solve
+    # saves) leaves a stray .part file, never a truncated cache entry that a later run would try to read.
+    part = f"{path}.{os.getpid()}.part"
+    try:
+        with open(part, "wb") as fh:
+            np.savez_compressed(fh, **{k: (v.astype(np.float32) if v.dtype.kind == "f" else v)
+                                       for k, v in arrays.items()})
+        os.replace(part, path)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
 
 
 def load_tables(path: str, build: Build, map_id: str, config: MdpConfig) -> ValueTables:
